@@ -18,19 +18,77 @@ import numpy as np
 
 
 def rallies(hits: np.ndarray, cfg: Dict) -> List[Dict]:
-    """把击球瞬态按间隔聚成回合。"""
+    """把击球瞬态按间隔聚成**活动片段**。
+
+    注意用词：这里聚出来的不是「回合」。对着穷尽标注实测，
+    这段训练录像里真实回合只有 0.5-2.8 秒、2-5 拍，120 秒里 14 个，
+    中间隔着 8-10 秒的捡球准备。而本函数输出的片段是 10-40 秒 ——
+    它是若干短回合加弹跳、噪声连成的活动密集区。
+
+    对训练录像的集锦来说这反而合适（连续练球比孤立的两板更好看），
+    但 hit_count 不能理解成「这个回合打了多少拍」。
+    """
     gap = float(cfg["gap_s"])
     if len(hits) == 0:
         return []
-    out = [{"start": float(hits[0]), "end": float(hits[0]), "hits": 1}]
+    groups: List[List[float]] = [[float(hits[0])]]
     for t in hits[1:]:
-        if t - out[-1]["end"] <= gap:
-            out[-1]["end"] = float(t)
-            out[-1]["hits"] += 1
+        if t - groups[-1][-1] <= gap:
+            groups[-1].append(float(t))
         else:
-            out.append({"start": float(t), "end": float(t), "hits": 1})
+            groups.append([float(t)])
+
+    out = []
+    for g in groups:
+        ts = np.array(g)
+        # 落地弹跳会让间隔一直很密，2.5 秒的分段规则不会在那里断开，
+        # 回合于是被拖长，把捡球画面卷进来。在弹跳起点截断。
+        if cfg.get("trim_bounce", True):
+            b = find_bounce_decay(ts, cfg)
+            if b is not None and b > ts[0]:
+                ts = ts[ts <= b]
+        if len(ts) == 0:
+            continue
+        out.append({"start": float(ts[0]), "end": float(ts[-1]), "hits": len(ts)})
     return [r for r in out
             if r["end"] - r["start"] >= cfg["min_duration_s"] and r["hits"] >= cfg["min_hits"]]
+
+
+def find_bounce_decay(ts: np.ndarray, cfg: Dict) -> Optional[float]:
+    """找球落地后的连续弹跳，返回弹跳起点时刻（即回合真正结束的地方）。
+
+    物理依据：弹跳的恢复系数是常数，每次弹跳保留固定比例的能量，
+    所以相邻间隔按**固定比值**收缩。实测一例 106.53-108.48s：
+        间隔 0.74 0.55 0.32 0.21 0.13，比值 0.74 0.58 0.66 0.62（标准差 0.06）
+    而回合内的击球虽然也可能出现间隔递减，比值却是散的：
+        104.96s 处 间隔 0.61 0.48 0.16 0.10，比值 0.79 0.33 0.63（标准差 0.19）
+    只看「递减」会把真实回合切断，必须加比值一致性。
+
+    不加这个判据的后果：回合被弹跳声拖长，捡球画面被剪进集锦
+    （实测集锦 #1 的 8-12 秒就是捡球）。
+    """
+    if len(ts) < cfg["bounce_min_count"] + 1:
+        return None
+    ioi = np.diff(ts)
+    best = None
+    for i in range(len(ioi) - cfg["bounce_min_count"] + 1):
+        j = i
+        while j + 1 < len(ioi) and ioi[j + 1] < ioi[j]:
+            j += 1
+        n = j - i + 1
+        if n < cfg["bounce_min_count"]:
+            continue
+        seg = ioi[i:j + 1]
+        if seg[-1] > cfg["bounce_final_ioi"]:      # 弹跳末尾必然很密
+            continue
+        ratios = seg[1:] / np.maximum(seg[:-1], 1e-6)
+        if ratios.std() > cfg["bounce_ratio_std"]:  # 比值必须一致
+            continue
+        if not (cfg["bounce_ratio_lo"] <= ratios.mean() <= cfg["bounce_ratio_hi"]):
+            continue
+        if best is None or ts[i] < best:
+            best = float(ts[i])
+    return best
 
 
 def score(rs: List[Dict], m_times: np.ndarray, m_vals: np.ndarray, cfg: Dict) -> List[Dict]:

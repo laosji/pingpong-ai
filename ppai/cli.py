@@ -188,7 +188,7 @@ def main(argv=None) -> int:
                                       args.minutes * 60 if args.minutes else None)
             print("  %d 个瞬态 -> %d 个回合 -> 选中 %d 个" % (len(hits), len(rs), len(picked)))
             for s_ in picked:
-                print("    #%-2d %6.1f-%6.1fs (%4.1fs, %3d拍, %.1f拍/秒, 评分 %.3f)"
+                print("    #%-2d %6.1f-%6.1fs (%4.1fs, %3d个瞬态, %.1f/秒, 评分 %.3f)"
                       % (s_["id"], s_["start"], s_["end"], s_["duration"],
                          s_["hit_count"], s_["hit_rate"], s_["confidence"]))
             if not picked:
