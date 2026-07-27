@@ -1,0 +1,399 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>球感 · 乒乓球集锦</title>
+<style>
+/* ── 设计系统 ─────────────────────────────────────────────
+   间距 4/8/12/16/20/32，字号 11.5/12.5/13/15/17
+   中性色偏暖；强调色只出现在「当前选中」和「主操作」两处，不滥用 */
+:root{
+  --bg:#f7f7f6; --surface:#fff; --surface-2:#fafaf9;
+  --line:#e8e6e3; --line-2:#d6d3cf;
+  --ink:#18181b; --ink-2:#52525b; --ink-3:#8b8782;
+  --accent:#2563eb; --on-accent:#fff; --accent-wash:#eff4ff; --accent-line:#bfd3fe;
+  --warn:#b45309; --warn-wash:#fffbeb;
+  --r-sm:6px; --r:10px; --r-lg:14px;
+  --shadow:0 1px 2px rgba(24,24,27,.04),0 4px 12px rgba(24,24,27,.05);
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#0f1012; --surface:#17181b; --surface-2:#1c1e21;
+    --line:#26282c; --line-2:#34373c;
+    --ink:#f4f4f5; --ink-2:#a1a1aa; --ink-3:#71717a;
+    --accent:#5b8dff; --on-accent:#0b1220; --accent-wash:#161d2e; --accent-line:#2b3d63;
+    --warn:#f0b429; --warn-wash:#1f1a0e;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 4px 12px rgba(0,0,0,.25);
+  }
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB",
+       "Segoe UI","Helvetica Neue",sans-serif;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+button,input,label{font-family:inherit}
+::selection{background:var(--accent-wash)}
+
+.top{height:60px;padding:0 24px;border-bottom:1px solid var(--line);
+  background:var(--surface);display:flex;align-items:center;gap:12px;
+  position:sticky;top:0;z-index:20}
+.logo{width:26px;height:26px;border-radius:7px;background:var(--accent);
+  display:grid;place-items:center;color:var(--on-accent);font-size:14px;font-weight:700}
+.brand{font-size:15px;font-weight:640;letter-spacing:-.01em}
+.tag{font-size:12.5px;color:var(--ink-3);padding-left:12px;
+  border-left:1px solid var(--line)}
+
+.shell{display:grid;grid-template-columns:280px minmax(0,1fr);height:calc(100% - 60px)}
+.side{border-right:1px solid var(--line);background:var(--surface);
+  display:flex;flex-direction:column;min-height:0}
+.side-hd{padding:16px 16px 12px;display:flex;align-items:center;
+  justify-content:space-between;gap:8px}
+.side-body{overflow-y:auto;padding:0 12px 16px;flex:1;min-height:0}
+.stage-wrap{overflow-y:auto;min-height:0}
+.stage{max-width:760px;margin:0 auto;padding:32px 32px 64px}
+.eyebrow{font-size:11px;font-weight:660;letter-spacing:.06em;color:var(--ink-3)}
+
+.item{display:block;width:100%;text-align:left;border:1px solid transparent;
+  background:transparent;color:inherit;font:inherit;
+  padding:10px 12px;border-radius:var(--r);cursor:pointer;margin-bottom:2px;
+  transition:background .12s ease,border-color .12s ease}
+.item:hover{background:var(--surface-2)}
+.item[aria-selected="true"]{background:var(--accent-wash);border-color:var(--accent-line)}
+.item .t{font-size:13px;line-height:1.45;word-break:break-all;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.item .s{font-size:11.5px;color:var(--ink-3);margin-top:3px;
+  font-variant-numeric:tabular-nums}
+
+.up{border:1px solid var(--line-2);border-radius:999px;padding:5px 12px;
+  font-size:12px;cursor:pointer;color:var(--ink-2);background:var(--surface);
+  white-space:nowrap;transition:all .12s ease}
+.up:hover{border-color:var(--accent);color:var(--accent)}
+.up[data-busy="1"]{opacity:.55;pointer-events:none}
+.prog{height:2px;background:var(--line);border-radius:2px;overflow:hidden;margin:0 16px 10px}
+.prog i{display:block;height:100%;background:var(--accent);width:0;transition:width .12s}
+.side.drop{outline:2px dashed var(--accent);outline-offset:-10px;background:var(--accent-wash)}
+
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);
+  box-shadow:var(--shadow);margin-bottom:20px;overflow:hidden}
+.card-pad{padding:20px}
+.card-hd{padding:15px 20px;border-bottom:1px solid var(--line);
+  display:flex;align-items:center;justify-content:space-between;gap:12px}
+.card-hd h3{margin:0;font-size:14px;font-weight:620;letter-spacing:-.005em}
+
+.player{background:#000;display:grid;place-items:center;min-height:180px}
+video{max-width:100%;display:block}
+
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));
+  border-top:1px solid var(--line)}
+.metric{padding:14px 20px;border-right:1px solid var(--line)}
+.metric:last-child{border-right:0}
+.metric b{display:block;font-size:17px;font-weight:640;letter-spacing:-.02em;
+  font-variant-numeric:tabular-nums;line-height:1.35}
+.metric span{font-size:11.5px;color:var(--ink-3)}
+
+/* 主题名排成一行，说明统一显示在下方 —— 说明写进按钮会让宽度参差、换行成好几排 */
+.chips{display:flex;gap:8px;overflow-x:auto;padding:2px 0 4px;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{flex:0 0 auto;white-space:nowrap;border:1px solid var(--line-2);
+  background:var(--surface);color:var(--ink-2);border-radius:999px;
+  padding:7px 15px;font-size:13px;font-weight:500;cursor:pointer;
+  transition:all .14s cubic-bezier(.2,.7,.3,1)}
+.chip:hover{border-color:var(--accent);color:var(--accent)}
+.chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);
+  color:var(--on-accent);font-weight:560}
+.desc{color:var(--ink-2);font-size:13px;margin-top:14px;min-height:1.6em}
+
+.btn{border:0;border-radius:var(--r);padding:10px 22px;font-size:14px;font-weight:560;
+  cursor:pointer;background:var(--accent);color:var(--on-accent);
+  transition:filter .12s ease,transform .06s ease}
+.btn:hover:not(:disabled){filter:brightness(1.08)}
+.btn:active:not(:disabled){transform:translateY(1px)}
+.btn:disabled{opacity:.45;cursor:default}
+.btn.ghost{background:transparent;color:var(--accent);border:1px solid var(--line-2);
+  padding:6px 14px;font-size:13px;text-decoration:none;display:inline-block}
+.btn.ghost:hover{border-color:var(--accent);filter:none}
+
+.note{font-size:12.5px;color:var(--ink-3);line-height:1.55}
+.alert{display:flex;gap:8px;align-items:flex-start;background:var(--warn-wash);
+  color:var(--warn);font-size:12.5px;padding:10px 14px;border-radius:var(--r-sm);
+  line-height:1.5}
+.run{display:flex;align-items:center;gap:11px;font-size:13.5px;color:var(--ink-2)}
+.spin{width:15px;height:15px;border:2px solid var(--line-2);
+  border-top-color:var(--accent);border-radius:50%;animation:sp .7s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.blank{text-align:center;padding:96px 24px;color:var(--ink-3)}
+.blank .ic{font-size:28px;line-height:1;margin-bottom:14px;opacity:.45}
+.blank p{margin:0;font-size:14px}
+.blank .sub{font-size:12.5px;margin-top:6px;opacity:.8}
+.sk{background:linear-gradient(90deg,var(--line) 25%,var(--surface-2) 50%,var(--line) 75%);
+  background-size:200% 100%;animation:sh 1.3s ease-in-out infinite;border-radius:var(--r-sm)}
+@keyframes sh{to{background-position:-200% 0}}
+
+.segs{display:flex;flex-wrap:wrap;gap:6px;padding:14px 20px;
+  border-top:1px solid var(--line);background:var(--surface-2)}
+.seg{display:inline-flex;align-items:stretch;border:1px solid var(--line);
+  background:var(--surface);border-radius:6px;overflow:hidden;
+  font-variant-numeric:tabular-nums;transition:border-color .12s ease}
+.seg:hover{border-color:var(--accent-line)}
+.seg[data-on="1"]{border-color:var(--accent);background:var(--accent-wash)}
+.seg button{border:0;background:transparent;color:var(--ink-2);cursor:pointer;
+  font-size:11.5px;padding:4px 8px;font-family:inherit}
+.seg button:hover{color:var(--accent)}
+.seg a{display:grid;place-items:center;padding:0 7px;color:var(--ink-3);
+  text-decoration:none;font-size:12px;border-left:1px solid var(--line)}
+.seg a:hover{color:var(--accent);background:var(--accent-wash)}
+.segs-hd{font-size:11.5px;color:var(--ink-3);width:100%;margin-bottom:2px}
+
+@media (max-width:880px){
+  .shell{grid-template-columns:1fr;height:auto}
+  .side{border-right:0;border-bottom:1px solid var(--line)}
+  .side-body{max-height:180px}
+  .stage{padding:20px 16px 48px}
+}
+</style>
+
+<div class="top">
+  <div class="logo">球</div>
+  <div class="brand">球感</div>
+  <div class="tag">从训练录像自动剪出精彩片段</div>
+</div>
+
+<div class="shell">
+  <div class="side" id="side">
+    <div class="side-hd">
+      <span class="eyebrow">录像</span>
+      <label class="up" id="up">
+        <input type="file" id="file" accept="video/mp4,video/quicktime,.mp4,.mov,.m4v" hidden>
+        <span id="uptxt">选择文件</span>
+      </label>
+    </div>
+    <div id="prog"></div>
+    <div class="side-body" id="list" role="listbox" aria-label="录像列表"></div>
+  </div>
+  <div class="stage-wrap"><div class="stage" id="stage"></div></div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const el = (t,c,h) => { const e=document.createElement(t);
+  if(c) e.className=c; if(h!=null) e.innerHTML=h; return e; };
+const mmss = s => `${Math.floor(s/60)}:${String(Math.round(s%60)).padStart(2,'0')}`;
+const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+let videos=[], themes=[], cur=null, pickTheme='auto', poll=null;
+
+async function boot(){
+  $('#list').innerHTML = '<div class="sk" style="height:50px;margin:2px 0"></div>'.repeat(4);
+  blank('▤','选一段录像开始','也可以把视频文件拖到左侧');
+  try{
+    [videos, themes] = await Promise.all([
+      fetch('/api/videos').then(r=>r.json()),
+      fetch('/api/themes').then(r=>r.json())]);
+  }catch(e){
+    $('#list').innerHTML='<div class="note" style="padding:0 12px">后端没连上</div>'; return;
+  }
+  drawList();
+}
+
+function drawList(){
+  const L=$('#list'); L.innerHTML='';
+  if(!videos.length){
+    L.appendChild(el('div','note','还没有录像。点右上角「选择文件」，或把视频拖进来。')); return;
+  }
+  videos.forEach((v,i)=>{
+    const b = el('button','item',
+      `<div class="t">${esc(v.name)}</div>
+       <div class="s">${mmss(v.duration)} · ${v.width}×${v.height}</div>`);
+    b.setAttribute('role','option');
+    b.setAttribute('aria-selected', cur===v ? 'true':'false');
+    b.onclick = ()=>choose(i);
+    L.appendChild(b);
+  });
+}
+
+function blank(ic,msg,sub){
+  $('#stage').innerHTML = `<div class="blank"><div class="ic">${ic}</div><p>${msg}</p>
+    ${sub?`<div class="sub">${sub}</div>`:''}</div>`;
+}
+
+function choose(i){
+  cur = videos[i];
+  [...$('#list').children].forEach((e,j)=>
+    e.setAttribute('aria-selected', j===i?'true':'false'));
+  draw();
+}
+
+/* 原生菜单里只留「播放速度」：下载在卡片上已有独立入口，重复了。
+   #t=0.5 让浏览器解码并显示首帧 —— 否则 preload=metadata 下播放器是一片纯黑，
+   看起来像加载失败。 */
+function player(src, portrait){
+  const poster = src + (src.includes('#') ? '' : '#t=0.5');
+  return `<div class="player"><video src="${poster}" controls
+    controlslist="nodownload noremoteplayback" disablepictureinpicture
+    preload="metadata" style="max-height:${portrait?420:360}px"></video></div>`;
+}
+
+function draw(){
+  const v=cur, portrait=v.height>v.width;
+  $('#stage').innerHTML = `
+    <div class="card">
+      ${player('/source?path='+encodeURIComponent(v.path), portrait)}
+      <div class="metrics">
+        <div class="metric"><b>${mmss(v.duration)}</b><span>时长</span></div>
+        <div class="metric"><b>${v.width}×${v.height}</b><span>分辨率</span></div>
+        <div class="metric"><b>${v.quality}</b><span>质量评分</span></div>
+      </div>
+      ${v.note && v.note!=='视频质量良好'
+        ? `<div class="card-pad" style="padding-top:16px"><div class="alert">
+             <span>⚠</span><span>${esc(v.note)}</span></div></div>` : ''}
+    </div>
+    <div class="card">
+      <div class="card-hd"><h3>剪辑主题</h3></div>
+      <div class="card-pad">
+        <div class="chips" id="chips" role="group" aria-label="剪辑主题"></div>
+        <div class="desc" id="desc"></div>
+        <div style="margin-top:20px"><button class="btn" id="go">开始剪辑</button></div>
+      </div>
+    </div>
+    <div id="out"></div>`;
+
+  const all=[{id:'auto',name:'自动',
+    desc:'先判断这段录像是「捡球多」还是「连续打」，再决定剪哪个主题'}, ...themes];
+  const C=$('#chips');
+  all.forEach(t=>{
+    const b=el('button','chip'); b.textContent=t.name;
+    b.setAttribute('aria-pressed', pickTheme===t.id?'true':'false');
+    b.onclick=()=>{ pickTheme=t.id; draw(); };      // 单选
+    C.appendChild(b);
+  });
+  $('#desc').textContent = (all.find(t=>t.id===pickTheme)||{}).desc || '';
+  $('#go').onclick = start;
+}
+
+async function start(){
+  $('#go').disabled = true;
+  $('#out').innerHTML = `<div class="card"><div class="card-pad"><div class="run">
+      <span class="spin"></span><span id="st">提交中</span></div></div></div>`;
+  let r;
+  try{
+    r = await fetch('/api/jobs',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({video:cur.path, themes:[pickTheme], top:10})}).then(x=>x.json());
+  }catch(e){ return fail('提交失败'); }
+  clearInterval(poll);
+  poll = setInterval(async ()=>{
+    let j; try{ j = await fetch('/api/jobs/'+r.id).then(x=>x.json()); }catch(e){ return; }
+    const st=$('#st'); if(st) st.textContent = j.stage;
+    if(j.state==='done'){ clearInterval(poll); done(j); }
+    if(j.state==='error'){ clearInterval(poll); fail(j.error); }
+  }, 600);
+}
+
+function fail(msg){
+  $('#go').disabled=false;
+  $('#out').innerHTML = `<div class="card"><div class="card-pad">
+    <div class="alert"><span>⚠</span><span>剪辑失败：${esc(msg)}</span></div></div></div>`;
+}
+
+function done(j){
+  $('#go').disabled=false;
+  const s=j.stats||{}, k=j.kind||{}, portrait=cur.height>cur.width;
+  let h = `<div class="card">
+    <div class="card-hd"><h3>录像分析</h3></div>
+    <div class="metrics" style="border-top:0">
+      <div class="metric"><b>${k.kind==='sparse'?'捡球多':'连续打'}</b><span>结构</span></div>
+      <div class="metric"><b>${s.rally_count ?? '—'}</b><span>回合</span></div>
+      <div class="metric"><b>${s.playing_seconds!=null?mmss(s.playing_seconds):'—'}</b><span>有效打球</span></div>
+      <div class="metric"><b>${s.playing_ratio!=null?Math.round(s.playing_ratio*100)+'%':'—'}</b><span>占比</span></div>
+    </div>
+    <div class="card-pad" style="padding-top:14px">
+      <div class="note">回合数与时长有 10–20% 误差；击球总数偏高，暂不展示。</div>
+    </div></div>`;
+
+  (j.results||[]).forEach((r,idx)=>{
+    if(r.empty){
+      h += `<div class="card"><div class="card-pad"><div class="note">
+        这段录像里没有符合条件的片段。</div></div></div>`;
+      return;
+    }
+    h += `<div class="card">
+      <div class="card-hd">
+        <h3>${esc(r.name)} · ${r.clips} 段 / ${r.seconds} 秒</h3>
+        <a class="btn ghost" href="${r.url}" download>下载</a>
+      </div>
+      ${player(r.url, portrait)}
+      <div class="segs" data-idx="${idx}">
+        <div class="segs-hd">${r.clips} 个片段 · 点时间跳转，点 ↓ 单独下载</div>
+        ${r.segments.map((x,i)=>
+        `<span class="seg" data-i="${i}">
+           <button data-off="${x.offset}" data-idx="${idx}">${mmss(x.start)}–${mmss(x.end)}</button>
+           <a href="${x.url}" download title="下载这一段">↓</a>
+         </span>`).join('')}
+      </div>
+    </div>`;
+  });
+  $('#out').innerHTML = h;
+
+  // 点片段 -> 主播放器跳到该片段在拼接成片里的位置
+  $('#out').querySelectorAll('.seg button').forEach(b=>{
+    b.onclick = ()=>{
+      const wrap = b.closest('.segs');
+      const v = wrap.previousElementSibling.querySelector('video');
+      v.currentTime = parseFloat(b.dataset.off) + 0.05;
+      v.play();
+      wrap.querySelectorAll('.seg').forEach(s=>s.dataset.on='');
+      b.parentElement.dataset.on = '1';
+    };
+  });
+  // 播放过程中高亮当前片段
+  $('#out').querySelectorAll('.card video').forEach(v=>{
+    const wrap = v.closest('.card').querySelector('.segs');
+    if(!wrap) return;
+    const offs = [...wrap.querySelectorAll('.seg button')].map(b=>parseFloat(b.dataset.off));
+    v.ontimeupdate = ()=>{
+      let k = 0;
+      for(let i=0;i<offs.length;i++) if(v.currentTime >= offs[i]) k = i;
+      wrap.querySelectorAll('.seg').forEach((s,i)=>s.dataset.on = i===k ? '1' : '');
+    };
+  });
+}
+
+function upload(f){
+  if(!f) return;
+  const lab=$('#up'), txt=$('#uptxt');
+  lab.dataset.busy='1'; txt.textContent='上传中';
+  $('#prog').innerHTML='<div class="prog"><i id="pb"></i></div>';
+  const xhr=new XMLHttpRequest(); xhr.open('POST','/api/upload');
+  xhr.upload.onprogress = e => { if(e.lengthComputable)
+    $('#pb').style.width = (100*e.loaded/e.total)+'%'; };
+  const reset=()=>{ lab.dataset.busy=''; txt.textContent='选择文件'; $('#prog').innerHTML=''; };
+  const err=m=>{ reset();
+    $('#prog').innerHTML=`<div class="note" style="padding:0 16px 10px;color:var(--warn)">${esc(m)}</div>`; };
+  xhr.onload = ()=>{
+    if(xhr.status===200){
+      reset();
+      const v = JSON.parse(xhr.responseText);
+      const at = videos.findIndex(x => x.fp && x.fp === v.fp);
+      if(at >= 0){ choose(at); drawList();      // 已有同一个视频，直接选中它
+        $('#prog').innerHTML =
+          '<div class="note" style="padding:0 16px 10px">这个视频已经在列表里了</div>';
+        setTimeout(()=>$('#prog').innerHTML='', 2600);
+      }else{ videos.push(v); drawList(); choose(videos.length-1); }
+    }else{
+      let m='上传失败'; try{ m=JSON.parse(xhr.responseText).detail||m; }catch(e){}
+      err(m);
+    }
+  };
+  xhr.onerror = ()=>err('上传失败');
+  const fd=new FormData(); fd.append('file',f); xhr.send(fd);
+}
+
+$('#file').onchange = e => { upload(e.target.files[0]); e.target.value=''; };
+const S=$('#side');
+['dragenter','dragover'].forEach(k=>S.addEventListener(k,e=>{
+  e.preventDefault(); S.classList.add('drop'); }));
+['dragleave','drop'].forEach(k=>S.addEventListener(k,e=>{
+  e.preventDefault(); S.classList.remove('drop'); }));
+S.addEventListener('drop', e => upload(e.dataTransfer.files[0]));
+
+boot();
+</script>

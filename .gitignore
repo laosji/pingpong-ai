@@ -6,3 +6,4 @@ labels/*.html
 negatives/
 models/
 cache/
+uploads/
