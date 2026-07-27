@@ -28,9 +28,12 @@ def fuse(hits: np.ndarray, m_times: np.ndarray, m_vals: np.ndarray,
         w_a, w_m = cfg["w_audio"], cfg["w_motion"]
     else:
         m = np.zeros(len(grid))
-        w_a, w_m = 1.0, 0.0   # 没有运动信号就全靠音频
+        w_a, w_m = cfg["w_audio"], cfg["w_motion"]
 
     score = w_a * a + w_m * m
+    if cfg.get("require_motion", True):
+        gate_at = max(float(cfg.get("motion_gate", 0.15)), 1e-6)
+        score *= np.clip(m / gate_at, 0, 1)
     return {"grid": grid, "score": score, "audio": a, "motion": m}
 
 

@@ -12,7 +12,7 @@ import glob
 import os
 from typing import Dict, List
 
-from . import audio, detect, motion
+from . import audio, detect, motion, scene
 
 
 def _measure(path: str, cfg: Dict) -> Dict:
@@ -28,6 +28,9 @@ def _measure(path: str, cfg: Dict) -> Dict:
     hits, _, _, _ = audio.detect_hits(x, cfg["audio"])
     m_t, m_v = motion.motion_curve(path, cfg["motion"])
     fused = detect.fuse(hits, m_t, m_v, dur, cfg["fuse"])
+    scene_score = scene.assess(path, cfg.get("scene", {}))
+    if cfg.get("scene", {}).get("enabled", True):
+        fused["score"] = fused["score"] * scene_score["score"]
     segs = detect.segment(fused["grid"], fused["score"], dur, hits, cfg["fuse"])
     covered = sum(s["duration"] for s in segs)
     return {"duration": dur, "hits": len(hits), "rate": len(hits) / dur,

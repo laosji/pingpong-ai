@@ -10,7 +10,7 @@ from typing import Dict
 
 import numpy as np
 
-from . import annotate, audio, config, detect, evaluate, labels, motion, render, validate, viz
+from . import annotate, audio, config, detect, evaluate, labels, motion, render, scene, validate, viz
 
 
 def probe(path: str) -> Dict:
@@ -68,6 +68,12 @@ def analyze(path: str, cfg: Dict, out_dir: str, make_plot: bool = True) -> Dict:
     print("  运动: %d 个采样点" % len(m_t))
 
     fused = detect.fuse(hits, m_t, m_v, meta["duration"], cfg["fuse"])
+    scene_score = scene.assess(path, cfg.get("scene", {}))
+    if cfg.get("scene", {}).get("enabled", True):
+        fused["score"] = fused["score"] * scene_score["score"]
+        print("  场景: score %.2f, edge %.3f%s" % (
+            scene_score["score"], scene_score["edge"],
+            "" if scene_score["passed"] else "，疑似非乒乓球场景"))
     segments = detect.segment(fused["grid"], fused["score"], meta["duration"], hits, cfg["fuse"])
 
     covered = sum(s["duration"] for s in segments)
@@ -76,6 +82,7 @@ def analyze(path: str, cfg: Dict, out_dir: str, make_plot: bool = True) -> Dict:
         "meta": meta,
         "params": cfg,
         "hits": [round(float(x), 3) for x in hits],
+        "scene": scene_score,
         "segments": segments,
         "summary": {
             "segment_count": len(segments),
