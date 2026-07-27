@@ -122,7 +122,7 @@ def main(argv=None) -> int:
     p.add_argument("--top", type=int, help="highlight: 取前几个回合")
     p.add_argument("--minutes", type=float, help="highlight: 目标集锦时长（分钟）")
     p.add_argument("--type", default="best",
-                   choices=["best", "longest", "kill", "error", "all"],
+                   choices=["best", "longest", "kill", "weak", "all"],
                    help="highlight: 集锦类型（对应方案模块七的四种）")
     args = p.parse_args(argv)
 
@@ -189,7 +189,7 @@ def main(argv=None) -> int:
             m_t, m_v = motion.motion_curve(path, cfg["motion"])
             rs = highlight.score(highlight.rallies(hits, hcfg, amps), m_t, m_v, hcfg)
             print("  %d 个瞬态 -> %d 个回合" % (len(hits), len(rs)))
-            kinds = (["best", "longest", "kill", "error"]
+            kinds = (["best", "longest", "kill", "weak"]
                      if args.type == "all" else [args.type])
             stem = os.path.splitext(os.path.basename(path))[0][:40]
             for kind in kinds:
@@ -200,9 +200,10 @@ def main(argv=None) -> int:
                 if not picked:
                     print("    没有符合条件的片段"); continue
                 for s_ in picked:
-                    print("    #%-2d %6.1f-%6.1fs (%4.1fs, %3d个瞬态, 力量 %3.0f, 收尾力量 %3.0f)"
+                    print("    #%-2d %6.1f-%6.1fs (%4.1fs, %3d个瞬态, 力量 %3.0f, 收尾 %3.0f, 比值 %.2f)"
                           % (s_["id"], s_["start"], s_["end"], s_["duration"],
-                             s_["hit_count"], s_["power"], s_["tail_power"]))
+                             s_["hit_count"], s_["power"], s_["tail_power"],
+                             s_["tail_power"] / max(s_["power"], 1e-6)))
                 parts = render.cut(path, picked,
                                    os.path.join(args.out, "%s_hl_%s" % (stem, kind)),
                                    cfg["render"])

@@ -152,19 +152,26 @@ def score(rs: List[Dict], m_times: np.ndarray, m_vals: np.ndarray, cfg: Dict) ->
     return rs
 
 
+# 「绝杀」和「失误」是同一个事件的两面：一方的绝杀就是另一方的失分，
+# 一个回合只有一次「最后一拍」。所以不做成两个独立类别，而是**同一根轴的两端**：
+#     收尾力量 / 回合整体力量
+#   高端 -> 主动得分（绝杀）    低端 -> 自己失误（下网/出界/吃转）
+# 用比值而非绝对强度，是为了抵消球员离麦克风远近、胶皮软硬的差异。
+#
+# 音频做不到的部分：**归属**。它只知道「这一下很响」，不知道是谁打的。
+# 做集锦不需要归属；做训练分析（方案第三阶段）必须有，那绕不开视觉。
 RANKERS = {
     "best":    "综合评分（相持长度 + 力量 + 频率 + 运动）",
     "longest": "最长相持 —— 按瞬态数排序",
-    "kill":    "绝杀 —— 按回合最后两拍的力量排序",
-    # error 目前检不出东西，保留实现但不要指望它 —— 见下方说明
-    "error":   "回合速终 —— 拍数少且以落地弹跳收尾（当前不可用，见文档）",
+    "kill":    "强收尾 —— 收尾力量/整体力量 最高（多为主动得分）",
+    "weak":    "弱收尾 —— 收尾力量/整体力量 最低（多为自身失误）",
 }
 
 
 def rank(rs: List[Dict], kind: str, cfg: Dict) -> List[Dict]:
     """按不同集锦类型排序（方案模块七的四种类型）。
 
-    error 的现状：**检不出东西**。判据要求连续 4 次间隔递减且比值一致，
+    弃用的 error 类型：**检不出东西**。判据要求连续 4 次间隔递减且比值一致，
     而检测器准确率仅 0.381，漏掉一次弹跳单调链就断。实测穷尽标注窗内
     收紧时 0 检出，放宽到比值标准差 0.30 时检出 1 个且是假的（准确率 0%%）。
     不要靠放宽阈值让它「有输出」—— 那是在制造结果。
@@ -176,12 +183,12 @@ def rank(rs: List[Dict], kind: str, cfg: Dict) -> List[Dict]:
     """
     if kind == "longest":
         return sorted(rs, key=lambda r: (-r["hits"], -(r["end"] - r["start"])))
-    if kind == "kill":
-        return sorted(rs, key=lambda r: -r.get("tail_power", 0.0))
-    if kind == "error":
-        cand = [r for r in rs if r.get("ended_with_bounce")
-                and r["hits"] <= cfg.get("error_max_hits", 8)]
-        return sorted(cand, key=lambda r: r["hits"])
+    if kind in ("kill", "weak"):
+        def ratio(r):
+            return r.get("tail_power", 0.0) / max(r.get("power", 0.0), 1e-6)
+        # 太短的回合（一两拍）比值噪声大，排除
+        cand = [r for r in rs if r["hits"] >= cfg.get("end_min_hits", 4)]
+        return sorted(cand, key=ratio, reverse=(kind == "kill"))
     return sorted(rs, key=lambda r: -r["score"])
 
 

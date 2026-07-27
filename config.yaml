@@ -86,6 +86,6 @@ highlight:
     hit_rate: 0.15       # 击球频率
     motion: 0.15         # 近似「移动范围 + 动作幅度」
     duration: 0.10
-  error_max_hits: 8      # 「回合速终」类型的拍数上限
+  end_min_hits: 4        # 强/弱收尾分类的最少拍数。一两拍的回合比值噪声太大
   bounce_lookahead_s: 3.0  # 回合结束后多久内出现的弹跳算作本回合的收尾。
                            # gap 降到 0.7 后弹跳会成为独立的簇，必须往后看才找得到
