@@ -186,7 +186,9 @@ def video_kind(rs: List[Dict], duration: float, cfg: Dict) -> Dict:
 
 # 稀疏型：有大量废料可删，综合集锦最有价值
 # 密集型：删不掉多少，要靠「最突出的那几拍」拉开差距
-AUTO_THEMES = {"sparse": ["best", "longest", "power"],
+# kill 用比值、与回合长度无关，和 longest 重叠最少（实测前10名重叠 1-4/10，
+# 而 power 是 3-6/10 —— 回合越长越容易出现重击，power 与长度天然相关）
+AUTO_THEMES = {"sparse": ["best", "longest", "kill"],
                "dense":  ["power", "longest", "kill"]}
 
 # 给前端用的展示信息：名称、一句话说明、以及适合哪种素材。
@@ -198,10 +200,10 @@ THEMES = [
      "applicable": ["sparse"]},
     {"id": "longest", "name": "最长对拉", "desc": "来回拍数最多的相持",
      "applicable": []},
-    {"id": "power",   "name": "最帅击球", "desc": "单拍力量最大的球",
+    {"id": "kill",    "name": "最帅击球", "desc": "一板打死对手的终结球（收尾力量/回合整体力量 最高）",
      "applicable": []},
-    {"id": "kill",    "name": "制胜一击", "desc": "一板打死对手的终结球",
-     "applicable": []},
+    {"id": "power",   "name": "最重扣杀", "desc": "单拍绝对力量最大的球",
+     "applicable": ["dense"]},
     {"id": "weak",    "name": "失误集合", "desc": "软掉收尾的回合（多为自身失误）",
      "applicable": []},
     {"id": "records", "name": "单项之最", "desc": "最长相持 / 最强击球 / 最强收尾 各一段",
@@ -211,9 +213,9 @@ THEMES = [
 RANKERS = {
     "best":    "综合评分（相持长度 + 力量 + 频率 + 运动）",
     "longest": "最长相持 —— 按瞬态数排序",
-    "kill":    "强收尾 —— 收尾力量/整体力量 最高（多为主动得分）",
+    "kill":    "最帅击球 —— 收尾力量/整体力量 最高，一板打死对手",
     "weak":    "弱收尾 —— 收尾力量/整体力量 最低（多为自身失误）",
-    "power":   "最帅击球 —— 按回合内单拍最强击球排序",
+    "power":   "最重扣杀 —— 按回合内单拍绝对力量排序",
     "records": "单项之最 —— 最长相持 / 最强击球 / 最强收尾 各一段",
 }
 
