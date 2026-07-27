@@ -110,6 +110,8 @@ def main(argv=None) -> int:
     p.add_argument("--pos", help="validate: 正样本 glob")
     p.add_argument("--neg", help="validate: 阴性对照 glob")
     p.add_argument("--labels", default="labels", help="标注目录（默认 labels/）")
+    p.add_argument("--window", nargs=2, type=float, metavar=("START","END"),
+                   help="annotate: 只标注这段（秒），并声明为穷尽标注区间")
     p.add_argument("-c", "--config", default=None)
     p.add_argument("-o", "--out", default="out")
     p.add_argument("-s", "--set", action="append", dest="overrides",
@@ -158,8 +160,12 @@ def main(argv=None) -> int:
             # 叠加 AI 预测供参考，人工只需修正 —— 方案模块八的数据闭环入口
             pred = analyze(path, cfg, args.out, make_plot=False)["segments"]
             stem = os.path.splitext(os.path.basename(path))[0]
+            win = tuple(args.window) if args.window else None
+            if win:
+                stem += "_%d-%d" % (int(win[0]), int(win[1]))
             dst = annotate.build(path, meta["duration"],
-                                 os.path.join(args.labels, stem + ".html"), lab, pred)
+                                 os.path.join(args.labels, stem + ".html"), lab, pred,
+                                 window=win)
             print("  标注页面: %s" % dst)
             print("  标完点「导出 JSON」，把文件存到 %s/" % args.labels)
             continue

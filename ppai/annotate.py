@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -50,45 +50,51 @@ _HTML = r"""<!doctype html>
   <canvas id="cv" width="__W__" height="__H__"></canvas>
 </div></div>
 <p class="k" style="padding:8px 16px">
-  时间轴上 <b>拖动</b> 新建打球区间 · <b>单击</b> 定位 · <b>点区间</b> 选中 · 拖区间两端调边界 ·
-  <kbd>←</kbd><kbd>→</kbd> 逐秒 · <kbd>F</kbd> 标记一次击球
+  __WINNOTE__<br>
+  时间轴上 <b>拖动</b> 标一次击球 · <b>单击</b> 定位 · <b>点已标记</b> 选中 · <kbd>Del</kbd> 删除 ·
+  <kbd>←</kbd><kbd>→</kbd> 0.2 秒微调（按住 Shift 为 5 秒）
   <span style="color:#6f7684">　绿=人工标注　蓝=AI 预测（仅参考）</span>
 </p>
 <script>
-const DUR=__DUR__, PPS=__PPS__, W=__W__, H=__H__;
+const DUR=__DUR__, PPS=__PPS__, W=__W__, H=__H__, T0=__T0__, T1=__T1__;
 let lab=__LABEL__, pred=__PRED__, sel=-1, drag=null;
 const v=document.getElementById('v'), cv=document.getElementById('cv'),
       cx=cv.getContext('2d'), wrap=document.getElementById('wrap');
-const x2t=x=>Math.max(0,Math.min(DUR,x/PPS)), t2x=t=>t*PPS;
+// 窗口模式：时间轴只覆盖 [T0,T1]，坐标要带偏移
+const x2t=x=>Math.max(T0,Math.min(T1,T0+x/PPS)), t2x=t=>(t-T0)*PPS;
+// 时刻换算带偏移，时长换算不能带 —— 别拿 t2x 去算宽度
+const d2x=d=>d*PPS;
 
 function draw(){
   cx.clearRect(0,0,W,H);
   // AI 预测：顶部细条，仅参考
   cx.fillStyle='rgba(90,150,255,.30)';
-  pred.forEach(s=>cx.fillRect(t2x(s[0]),0,t2x(s[1]-s[0]),9));
+  pred.forEach(s=>cx.fillRect(t2x(s[0]),0,d2x(s[1]-s[0]),9));
   // 人工标注
   lab.playing.forEach((s,i)=>{
     cx.fillStyle = i===sel?'rgba(80,220,140,.42)':'rgba(80,220,140,.22)';
-    cx.fillRect(t2x(s[0]),10,t2x(s[1]-s[0]),H-10);
+    cx.fillRect(t2x(s[0]),10,Math.max(2,d2x(s[1]-s[0])),H-10);
     cx.strokeStyle = i===sel?'#7dffb0':'#3ecf80'; cx.lineWidth=i===sel?2:1;
-    cx.strokeRect(t2x(s[0]),10,t2x(s[1]-s[0]),H-10);
+    cx.strokeRect(t2x(s[0]),10,Math.max(2,d2x(s[1]-s[0])),H-10);
   });
   cx.strokeStyle='rgba(255,180,60,.85)'; cx.lineWidth=1;
   lab.hits.forEach(t=>{cx.beginPath();cx.moveTo(t2x(t),H-22);cx.lineTo(t2x(t),H);cx.stroke();});
   if(drag){ cx.fillStyle='rgba(80,220,140,.25)';
-    cx.fillRect(t2x(Math.min(drag.a,drag.b)),10,t2x(Math.abs(drag.b-drag.a)),H-10); }
+    cx.fillRect(t2x(Math.min(drag.a,drag.b)),10,d2x(Math.abs(drag.b-drag.a)),H-10); }
   const px=t2x(v.currentTime);
   cx.strokeStyle='#ff5c5c'; cx.lineWidth=2;
   cx.beginPath();cx.moveTo(px,0);cx.lineTo(px,H);cx.stroke();
-  const tot=lab.playing.reduce((a,s)=>a+s[1]-s[0],0);
+  const inWin=lab.playing.filter(s=>s[1]>T0&&s[0]<T1).length;
+  const mmss=x=>`${Math.floor(x/60)}:${String(Math.floor(x%60)).padStart(2,'0')}`;
   document.getElementById('stat').textContent =
-    `${v.currentTime.toFixed(1)}s / ${DUR.toFixed(1)}s · 已标 ${lab.playing.length} 段 `+
-    `共 ${tot.toFixed(1)}s (${(100*tot/DUR).toFixed(0)}%) · ${lab.complete?'已标完':'未标完'}`;
+    `${mmss(v.currentTime)} · 窗口 ${mmss(T0)}–${mmss(T1)} · 本窗已标 ${inWin} 次击球 · 全片共 ${lab.playing.length}`;
 }
 function tick(){draw();
   const px=t2x(v.currentTime);
   if(px<wrap.scrollLeft||px>wrap.scrollLeft+wrap.clientWidth-60)
     wrap.scrollLeft=px-wrap.clientWidth*0.35;
+  // 窗口模式下播出界就停，避免不知不觉标到窗口外
+  if(v.currentTime>T1+0.2&&!v.paused) v.pause();
   requestAnimationFrame(tick);}
 function norm(){ // 排序 + 合并重叠，和 labels.py 保持一致
   lab.playing=lab.playing.map(s=>[Math.max(0,Math.min(...s)),Math.min(DUR,Math.max(...s))])
@@ -143,9 +149,12 @@ document.onkeydown=e=>{
       Math.max(mk,v.currentTime)]);mk=null;norm();draw();}
   else if(k==='f'){lab.hits.push(v.currentTime);draw();}
   else if(e.key==='Delete'||e.key==='Backspace'){e.preventDefault();delSel();}
-  else if(e.key==='ArrowLeft'){e.preventDefault();v.currentTime=Math.max(0,v.currentTime-(e.shiftKey?5:1));}
-  else if(e.key==='ArrowRight'){e.preventDefault();v.currentTime=Math.min(DUR,v.currentTime+(e.shiftKey?5:1));}
+  else if(e.key==='ArrowLeft'){e.preventDefault();v.currentTime=Math.max(T0,v.currentTime-(e.shiftKey?5:0.2));}
+  else if(e.key==='ArrowRight'){e.preventDefault();v.currentTime=Math.min(T1,v.currentTime+(e.shiftKey?5:0.2));}
 };
+// 窗口模式：一进来就定位到窗口开头
+function goStart(){ if(v.currentTime<T0||v.currentTime>T1) v.currentTime=T0; }
+if(v.readyState>=1) goStart(); else v.addEventListener('loadedmetadata',goStart,{once:true});
 tick();
 </script>
 """
@@ -173,18 +182,44 @@ def _spectrogram_png(pcm: np.ndarray, sr: int, width: int, height: int) -> str:
 
 def build(video: str, duration: float, out_html: str, label: Dict,
           pred_segments: Optional[List[Dict]] = None, sr: int = 16000,
-          height: int = 150, max_width: int = 28000) -> str:
-    """生成标注页面。max_width 是浏览器 canvas 的安全上限。"""
-    pps = min(100.0, max_width / max(duration, 1e-6))
-    pps = max(pps, 4.0)
-    width = max(1, int(duration * pps))
+          height: int = 150, max_width: int = 28000,
+          window: Optional[Tuple[float, float]] = None) -> str:
+    """生成标注页面。max_width 是浏览器 canvas 的安全上限。
+
+    window=(t0,t1) 时只标注该时段：分辨率可以拉得很高，且自动把该时段
+    写入 complete_ranges —— 声明「这段我逐个标完了」，评测才敢在其中算准确率。
+    """
+    t0, t1 = window if window else (0.0, duration)
+    t0 = max(0.0, min(t0, duration))
+    t1 = max(t0 + 1.0, min(t1, duration))
+    span = t1 - t0
+
+    # 窗口越短，每秒像素越多；2 分钟的窗可以到 200px/s，即每像素 5 毫秒
+    pps = max(4.0, min(200.0, max_width / span))
+    width = max(1, int(span * pps))
 
     pcm = A.extract_pcm(video, sr)
+    if window:
+        pcm = pcm[int(t0 * sr):int(t1 * sr)]
+        label = dict(label)
+        merged = list(label.get("complete_ranges") or []) + [[round(t0, 3), round(t1, 3)]]
+        label["complete_ranges"] = merged
     spec = _spectrogram_png(pcm, sr, width, height) if len(pcm) > 512 else ""
 
     rel = os.path.relpath(os.path.abspath(video), os.path.dirname(os.path.abspath(out_html)))
     stem = os.path.splitext(os.path.basename(video))[0]
     pred = [[s["start"], s["end"]] for s in (pred_segments or [])]
+
+    def mmss(x):
+        return "%d:%02d" % (int(x) // 60, int(x) % 60)
+
+    if window:
+        note = ("<b style='color:#7dffb0'>穷尽标注窗口 %s – %s（%.0f 秒）</b>："
+                "请把这段里<b>每一次</b>击球都标上，漏一个都会被算成误报。"
+                "导出的 JSON 会自动带上 complete_ranges，评测只在此区间算准确率。"
+                % (mmss(t0), mmss(t1), span))
+    else:
+        note = "整片模式：未声明 complete_ranges，导出的标注只能算召回，不能算准确率。"
 
     html = _HTML
     for k, val in (("__NAME__", os.path.basename(video)),
@@ -195,6 +230,9 @@ def build(video: str, duration: float, out_html: str, label: Dict,
                    ("__PPS__", "%.4f" % pps),
                    ("__W__", str(width)),
                    ("__H__", str(height)),
+                   ("__T0__", "%.3f" % t0),
+                   ("__T1__", "%.3f" % t1),
+                   ("__WINNOTE__", note),
                    ("__LABEL__", json.dumps(label, ensure_ascii=False)),
                    ("__PRED__", json.dumps(pred))):
         html = html.replace(k, val)
