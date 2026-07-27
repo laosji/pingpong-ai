@@ -69,7 +69,7 @@ def report(s: Dict) -> None:
     print("  回合 %d 个 | 每回合中位 %d 个瞬态 / %.1f 秒"
           % (s["rally_count"], s["rally_len_median"], s["rally_dur_median"]))
     r = s["records"]
-    print("\n  单项之最")
+    print("\n  精彩瞬间（三项纪录）")
     print("    最长相持   %s-%s  %d 个瞬态，%.1f 秒"
           % (_mmss(r["longest_rally"]["start"]), _mmss(r["longest_rally"]["end"]),
              r["longest_rally"]["hits"], r["longest_rally"]["duration"]))
