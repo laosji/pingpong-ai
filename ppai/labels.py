@@ -32,7 +32,10 @@ def empty(video: str, duration: float, complete: bool = False) -> Dict:
         # 把它当负样本会把漏标算成误报，得出的准确率毫无意义。
         # 召回则不受影响，全部标记都可用。
         "complete_ranges": [],
-        "playing": [],      # [[start, end], ...] 有效比赛区间
+        "playing": [],      # [[start, end], ...] 击球/有效比赛
+        # 捡球区间：球落地后到重新开始之间。和 playing 分开存 ——
+        # 这是**负例**，混进 playing 会让真值直接失效。
+        "pickup": [],
         "hits": [],         # 可选：击球瞬态时间点
         "notes": "",
     }
@@ -56,6 +59,7 @@ def load(path: str) -> Dict:
     if lab.get("schema") != SCHEMA:
         raise ValueError("标注格式版本不符: %s" % path)
     lab["playing"] = _normalize(lab.get("playing", []), lab["duration"])
+    lab["pickup"] = _normalize(lab.get("pickup", []), lab["duration"])
     lab["complete_ranges"] = _normalize(lab.get("complete_ranges", []), lab["duration"])
     if lab.get("complete") and not lab["complete_ranges"]:
         lab["complete_ranges"] = [[0.0, lab["duration"]]]
@@ -70,6 +74,7 @@ def scored_ranges(lab: Dict) -> List[List[float]]:
 def save(lab: Dict, path: str) -> str:
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     lab["playing"] = _normalize(lab.get("playing", []), lab["duration"])
+    lab["pickup"] = _normalize(lab.get("pickup", []), lab["duration"])
     with open(path, "w", encoding="utf-8") as f:
         json.dump(lab, f, ensure_ascii=False, indent=2)
     return path
