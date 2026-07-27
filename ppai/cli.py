@@ -107,7 +107,7 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="ppai", description="乒乓球有效比赛检测原型")
     p.add_argument("command", choices=["probe", "analyze", "cut", "validate",
                                        "annotate", "label-negative", "eval", "eval-hits",
-                                       "highlight", "stats"])
+                                       "highlight", "stats", "themes"])
     p.add_argument("paths", nargs="*")
     p.add_argument("--pos", help="validate: 正样本 glob")
     p.add_argument("--neg", help="validate: 阴性对照 glob")
@@ -128,6 +128,11 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
 
     cfg = config.override(config.load(args.config), args.overrides)
+
+    if args.command == "themes":
+        # 前端拉这个列表渲染选项
+        print(json.dumps(highlight.THEMES, ensure_ascii=False, indent=2))
+        return 0
 
     if args.command == "validate":
         if not args.pos or not args.neg:
@@ -197,6 +202,15 @@ def main(argv=None) -> int:
             if args.type == "auto":
                 kinds = highlight.AUTO_THEMES.get(vk["kind"], ["best"])
                 print("  自动选题: %s" % " / ".join(kinds))
+            elif args.type not in ("all",):
+                # 用户手选了不适合这段素材的主题：不拒绝，但要说明会得到什么
+                th = next((t for t in highlight.THEMES if t["id"] == args.type), None)
+                if th and th["applicable"] and vk["kind"] not in th["applicable"]:
+                    print("  提示: 「%s」更适合%s素材；这段是%s，"
+                          % (th["name"],
+                             "稀疏（有大量捡球可删）" if "sparse" in th["applicable"] else "密集",
+                             "密集（几乎全在打球）" if vk["kind"] == "dense" else "稀疏")
+                          + "结果仍可用但压缩比会很低。")
             elif args.type == "all":
                 kinds = ["best", "longest", "kill", "weak", "power", "records"]
             else:

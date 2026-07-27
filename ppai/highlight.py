@@ -189,6 +189,25 @@ def video_kind(rs: List[Dict], duration: float, cfg: Dict) -> Dict:
 AUTO_THEMES = {"sparse": ["best", "longest", "kill"],
                "dense":  ["power", "longest", "kill"]}
 
+# 给前端用的展示信息：名称、一句话说明、以及适合哪种素材。
+# applicable 为空表示通用；否则前端应在结构不匹配时给出提示而不是直接隐藏 ——
+# 用户在多球训练视频上选「训练集锦」不会报错，只是压缩比低（约 2:1），
+# 应该告诉他「这段素材本来就几乎全在打球，删不掉多少」。
+THEMES = [
+    {"id": "best",    "name": "训练集锦", "desc": "综合最精彩的若干回合",
+     "applicable": ["sparse"]},
+    {"id": "longest", "name": "最长对拉", "desc": "来回拍数最多的相持",
+     "applicable": []},
+    {"id": "kill",    "name": "最帅击球", "desc": "一板打死对手的终结球",
+     "applicable": []},
+    {"id": "power",   "name": "最重扣杀", "desc": "单拍力量最大的球",
+     "applicable": ["dense"]},
+    {"id": "weak",    "name": "失误集合", "desc": "软掉收尾的回合（多为自身失误）",
+     "applicable": []},
+    {"id": "records", "name": "单项之最", "desc": "最长相持 / 最强击球 / 最强收尾 各一段",
+     "applicable": []},
+]
+
 RANKERS = {
     "best":    "综合评分（相持长度 + 力量 + 频率 + 运动）",
     "longest": "最长相持 —— 按瞬态数排序",
