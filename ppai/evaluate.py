@@ -37,19 +37,23 @@ def evaluate(videos: List[str], label_dir: str, predict: Callable[[str], List[Di
         if lab is None:
             skipped.append((os.path.basename(v), "无标注"))
             continue
-        if not lab.get("complete"):
-            skipped.append((os.path.basename(v), "标注未完成，算召回会失真"))
+        scored = L.scored_ranges(lab)
+        if not scored:
+            skipped.append((os.path.basename(v),
+                            "没有 complete_ranges —— 抽样标注只能算召回，算准确率会把漏标当误报"))
             continue
 
         dur = lab["duration"]
         truth = L.to_mask(lab["playing"], dur, dt)
         pred = L.to_mask([[s["start"], s["end"]] for s in predict(v)], dur, dt)
         n = min(len(pred), len(truth))
-        m = _prf(pred[:n], truth[:n])
+        # 只在声明为穷尽标注的时段内计分
+        keep = L.to_mask(scored, dur, dt)[:n]
+        m = _prf(pred[:n][keep], truth[:n][keep])
         m["name"] = os.path.basename(v)[:34]
         m["duration"] = dur
-        m["truth_ratio"] = float(truth.mean())
-        m["pred_ratio"] = float(pred.mean())
+        m["truth_ratio"] = float(truth[:n][keep].mean())
+        m["pred_ratio"] = float(pred[:n][keep].mean())
         rows.append(m)
         for k in agg:
             agg[k] += m[k]

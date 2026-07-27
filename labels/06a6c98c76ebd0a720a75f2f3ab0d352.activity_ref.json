@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "video": "/Users/duanchao/Downloads/PP-video/06a6c98c76ebd0a720a75f2f3ab0d352.mp4",
+  "duration": 727.84,
+  "complete": false,
+  "playing": [
+    [
+      5.251,
+      122.641
+    ],
+    [
+      138.264,
+      140.057
+    ],
+    [
+      159.865,
+      251.755
+    ],
+    [
+      268.729,
+      319.652
+    ],
+    [
+      339.849,
+      493.008
+    ],
+    [
+      509.202,
+      644.918
+    ]
+  ],
+  "hits": [
+    274.973,
+    277.323,
+    331.726
+  ],
+  "notes": "Derived from sparse short playing marks by merging gaps <= 15s; reference only, not complete ground truth."
+}

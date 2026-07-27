@@ -25,9 +25,13 @@ def empty(video: str, duration: float, complete: bool = False) -> Dict:
         "schema": SCHEMA,
         "video": os.path.abspath(video),
         "duration": round(duration, 3),
-        # complete=True 表示「整段都看过了」，未标区间即确认为没打球。
-        # 只有 complete 的标注才能算召回率 —— 否则漏标会被误判成误报。
+        # complete=True 表示整段都看过了。整片穷尽标注很费时，实际很少这么做。
         "complete": complete,
+        # 更实用的形式：只声明**某几段**是穷尽标注的。
+        # 准确率只能在这些区间内计算 —— 区间外没有标记不代表那里没发生，
+        # 把它当负样本会把漏标算成误报，得出的准确率毫无意义。
+        # 召回则不受影响，全部标记都可用。
+        "complete_ranges": [],
         "playing": [],      # [[start, end], ...] 有效比赛区间
         "hits": [],         # 可选：击球瞬态时间点
         "notes": "",
@@ -52,7 +56,15 @@ def load(path: str) -> Dict:
     if lab.get("schema") != SCHEMA:
         raise ValueError("标注格式版本不符: %s" % path)
     lab["playing"] = _normalize(lab.get("playing", []), lab["duration"])
+    lab["complete_ranges"] = _normalize(lab.get("complete_ranges", []), lab["duration"])
+    if lab.get("complete") and not lab["complete_ranges"]:
+        lab["complete_ranges"] = [[0.0, lab["duration"]]]
     return lab
+
+
+def scored_ranges(lab: Dict) -> List[List[float]]:
+    """可用于算准确率的时段。空列表表示这份标注只能算召回。"""
+    return lab.get("complete_ranges") or []
 
 
 def save(lab: Dict, path: str) -> str:
