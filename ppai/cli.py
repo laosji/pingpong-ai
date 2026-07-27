@@ -181,16 +181,17 @@ def main(argv=None) -> int:
                 hcfg["top_n"] = args.top
             meta = probe(path)
             pcm = audio.extract_pcm(path, cfg["audio"]["sr"])
-            hits, _, _, _ = audio.detect_hits(pcm, cfg["audio"])
+            hits, env_, _, fr_ = audio.detect_hits(pcm, cfg["audio"])
+            amps = audio.hit_amplitudes(hits, env_, fr_)
             m_t, m_v = motion.motion_curve(path, cfg["motion"])
-            rs = highlight.score(highlight.rallies(hits, hcfg), m_t, m_v, hcfg)
+            rs = highlight.score(highlight.rallies(hits, hcfg, amps), m_t, m_v, hcfg)
             picked = highlight.select(rs, hcfg,
                                       args.minutes * 60 if args.minutes else None)
             print("  %d 个瞬态 -> %d 个回合 -> 选中 %d 个" % (len(hits), len(rs), len(picked)))
             for s_ in picked:
-                print("    #%-2d %6.1f-%6.1fs (%4.1fs, %3d个瞬态, %.1f/秒, 评分 %.3f)"
+                print("    #%-2d %6.1f-%6.1fs (%4.1fs, %3d个瞬态, %.1f/秒, 力量 %3.0f, 评分 %.3f)"
                       % (s_["id"], s_["start"], s_["end"], s_["duration"],
-                         s_["hit_count"], s_["hit_rate"], s_["confidence"]))
+                         s_["hit_count"], s_["hit_rate"], s_["power"], s_["confidence"]))
             if not picked:
                 print("  没有找到回合"); continue
             stem = os.path.splitext(os.path.basename(path))[0][:40]

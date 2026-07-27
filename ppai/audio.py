@@ -107,5 +107,19 @@ def detect_hits(x: np.ndarray, cfg: Dict) -> Tuple[np.ndarray, np.ndarray, np.nd
             kept.append(i)
             taken[i] = True
 
-    hits = np.sort(np.array(kept)) / frame_rate
+    ki = np.sort(np.array(kept))
+    hits = ki / frame_rate
     return hits, env, thr, frame_rate
+
+
+def hit_amplitudes(hits: np.ndarray, env: np.ndarray, frame_rate: float) -> np.ndarray:
+    """每次击球的谱通量峰值 —— 近似「击球力量/速度」。
+
+    用户观察：速度快、力量大、声音响的球往往是最精彩的部分。
+    方案模块六里的「击球速度 20%」就是这个量，此前一直没接进评分。
+    """
+    if len(env) == 0 or len(hits) == 0:
+        return np.zeros(len(hits))
+    idx = np.clip((np.asarray(hits) * frame_rate).astype(int), 0, len(env) - 1)
+    # 取峰值附近的最大值，容忍几帧的定位误差
+    return np.array([env[max(0, i - 2):i + 3].max() for i in idx])

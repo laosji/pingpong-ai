@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 
-def rallies(hits: np.ndarray, cfg: Dict) -> List[Dict]:
+def rallies(hits: np.ndarray, cfg: Dict, amps: Optional[np.ndarray] = None) -> List[Dict]:
     """把击球瞬态按间隔聚成**活动片段**。
 
     注意用词：这里聚出来的不是「回合」。对着穷尽标注实测，
@@ -31,25 +31,32 @@ def rallies(hits: np.ndarray, cfg: Dict) -> List[Dict]:
     gap = float(cfg["gap_s"])
     if len(hits) == 0:
         return []
-    groups: List[List[float]] = [[float(hits[0])]]
-    for t in hits[1:]:
-        if t - groups[-1][-1] <= gap:
-            groups[-1].append(float(t))
+    if amps is None:
+        amps = np.ones(len(hits))
+    idx: List[List[int]] = [[0]]
+    for i in range(1, len(hits)):
+        if hits[i] - hits[idx[-1][-1]] <= gap:
+            idx[-1].append(i)
         else:
-            groups.append([float(t)])
+            idx.append([i])
 
     out = []
-    for g in groups:
-        ts = np.array(g)
+    for g in idx:
+        ts = np.asarray(hits)[g].astype(float)
+        av = np.asarray(amps)[g].astype(float)
         # 落地弹跳会让间隔一直很密，2.5 秒的分段规则不会在那里断开，
         # 回合于是被拖长，把捡球画面卷进来。在弹跳起点截断。
         if cfg.get("trim_bounce", True):
             b = find_bounce_decay(ts, cfg)
             if b is not None and b > ts[0]:
-                ts = ts[ts <= b]
+                keep = ts <= b
+                ts, av = ts[keep], av[keep]
         if len(ts) == 0:
             continue
-        out.append({"start": float(ts[0]), "end": float(ts[-1]), "hits": len(ts)})
+        # 力量：取较强的那部分击球，而不是均值 —— 一个回合里总有轻挡和过渡球，
+        # 用均值会把爆发力强的回合和平稳的回合拉平
+        out.append({"start": float(ts[0]), "end": float(ts[-1]), "hits": len(ts),
+                    "power": float(np.percentile(av, 80)) if len(av) else 0.0})
     return [r for r in out
             if r["end"] - r["start"] >= cfg["min_duration_s"] and r["hits"] >= cfg["min_hits"]]
 
@@ -103,6 +110,7 @@ def score(rs: List[Dict], m_times: np.ndarray, m_vals: np.ndarray, cfg: Dict) ->
     w = cfg["weights"]
     n_hits = np.array([r["hits"] for r in rs], float)
     dur = np.array([r["end"] - r["start"] for r in rs], float)
+    power = np.array([r.get("power", 0.0) for r in rs], float)
     rate = n_hits / np.maximum(dur, 1e-6)
     if len(m_times) > 1:
         motion = np.array([m_vals[(m_times >= r["start"]) & (m_times <= r["end"])].mean()
@@ -116,10 +124,12 @@ def score(rs: List[Dict], m_times: np.ndarray, m_vals: np.ndarray, cfg: Dict) ->
         return (x - lo) / (hi - lo) if hi > lo else np.zeros_like(x)
 
     s = (w["rally_length"] * nz(n_hits) + w["duration"] * nz(dur)
-         + w["hit_rate"] * nz(rate) + w["motion"] * nz(motion))
+         + w["hit_rate"] * nz(rate) + w["motion"] * nz(motion)
+         + w.get("power", 0.0) * nz(power))
     for r, v, m in zip(rs, s, motion):
         r["score"] = round(float(v), 4)
         r["motion"] = round(float(m), 3)
+        r["power"] = round(float(r.get("power", 0.0)), 1)
         r["hit_rate"] = round(float(r["hits"] / max(r["end"] - r["start"], 1e-6)), 2)
     return sorted(rs, key=lambda r: -r["score"])
 
@@ -145,8 +155,10 @@ def select(rs: List[Dict], cfg: Dict, total_s: Optional[float] = None) -> List[D
             m["_b"] = max(m["_b"], b)
             m["hits"] += r["hits"]
             m["score"] = max(m["score"], r["score"])
+            m["power"] = max(m["power"], r.get("power", 0.0))
         else:
-            merged.append({"_a": a, "_b": b, "hits": r["hits"], "score": r["score"]})
+            merged.append({"_a": a, "_b": b, "hits": r["hits"], "score": r["score"],
+                           "power": r.get("power", 0.0)})
 
     out = []
     for i, m in enumerate(merged, 1):
@@ -157,6 +169,7 @@ def select(rs: List[Dict], cfg: Dict, total_s: Optional[float] = None) -> List[D
             "end": round(m["_b"], 2),
             "duration": round(dur, 2),
             "hit_count": m["hits"],
+            "power": m.get("power", 0.0),
             "hit_rate": round(m["hits"] / max(dur, 1e-6), 2),
             "confidence": round(m["score"], 4),
         })
