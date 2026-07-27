@@ -10,7 +10,7 @@ from typing import Dict
 
 import numpy as np
 
-from . import audio, config, detect, motion, render, validate, viz
+from . import annotate, audio, config, detect, evaluate, labels, motion, render, validate, viz
 
 
 def probe(path: str) -> Dict:
@@ -97,10 +97,12 @@ def analyze(path: str, cfg: Dict, out_dir: str, make_plot: bool = True) -> Dict:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="ppai", description="乒乓球有效比赛检测原型")
-    p.add_argument("command", choices=["probe", "analyze", "cut", "validate"])
+    p.add_argument("command", choices=["probe", "analyze", "cut", "validate",
+                                       "annotate", "label-negative", "eval"])
     p.add_argument("paths", nargs="*")
     p.add_argument("--pos", help="validate: 正样本 glob")
     p.add_argument("--neg", help="validate: 阴性对照 glob")
+    p.add_argument("--labels", default="labels", help="标注目录（默认 labels/）")
     p.add_argument("-c", "--config", default=None)
     p.add_argument("-o", "--out", default="out")
     p.add_argument("-s", "--set", action="append", dest="overrides",
@@ -116,6 +118,13 @@ def main(argv=None) -> int:
         res = validate.run(args.pos, args.neg, cfg)
         return 0 if res["passed"] else 1
 
+    if args.command == "eval":
+        res = evaluate.evaluate(
+            args.paths, args.labels,
+            lambda v: analyze(v, cfg, args.out, make_plot=False)["segments"])
+        evaluate.report(res)
+        return 0
+
     for path in args.paths:
         if not os.path.exists(path):
             print("跳过（不存在）: %s" % path, file=sys.stderr)
@@ -124,6 +133,28 @@ def main(argv=None) -> int:
 
         if args.command == "probe":
             print(json.dumps(probe(path), ensure_ascii=False, indent=2))
+            continue
+
+        if args.command == "label-negative":
+            meta = probe(path)
+            lab = labels.negative(path, meta["duration"])
+            dst = labels.save(lab, labels.path_for(path, args.labels))
+            print("  已标为阴性（全程无乒乓球）: %s" % dst)
+            continue
+
+        if args.command == "annotate":
+            meta = probe(path)
+            existing = labels.find(path, args.labels)
+            lab = existing or labels.empty(path, meta["duration"])
+            if existing:
+                print("  载入已有标注: %d 段" % len(lab["playing"]))
+            # 叠加 AI 预测供参考，人工只需修正 —— 方案模块八的数据闭环入口
+            pred = analyze(path, cfg, args.out, make_plot=False)["segments"]
+            stem = os.path.splitext(os.path.basename(path))[0]
+            dst = annotate.build(path, meta["duration"],
+                                 os.path.join(args.labels, stem + ".html"), lab, pred)
+            print("  标注页面: %s" % dst)
+            print("  标完点「导出 JSON」，把文件存到 %s/" % args.labels)
             continue
 
         res = analyze(path, cfg, args.out, make_plot=not args.no_plot)

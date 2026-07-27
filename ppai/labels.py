@@ -1,0 +1,90 @@
+"""标注格式与读写。
+
+设计取舍：主标注是**区间级**（打球/没打球），不是逐拍级。
+理由有三：
+  1. 区间级就是模块四要的产品指标，也是方案「第一阶段训练目标」的形式；
+  2. 一个视频几分钟标完，逐拍标要点几千次；
+  3. 区间级足够训练分类器 —— 把区间切成 1 秒窗即为样本。
+逐拍标注（hits）是可选的，留给模块五算回合拍数时再补。
+
+阴性素材（没有乒乓球的视频）是免费真值：整段 not_playing，零人工。
+"""
+from __future__ import annotations
+
+import json
+import os
+from typing import Dict, List, Optional
+
+import numpy as np
+
+SCHEMA = 1
+
+
+def empty(video: str, duration: float, complete: bool = False) -> Dict:
+    return {
+        "schema": SCHEMA,
+        "video": os.path.abspath(video),
+        "duration": round(duration, 3),
+        # complete=True 表示「整段都看过了」，未标区间即确认为没打球。
+        # 只有 complete 的标注才能算召回率 —— 否则漏标会被误判成误报。
+        "complete": complete,
+        "playing": [],      # [[start, end], ...] 有效比赛区间
+        "hits": [],         # 可选：击球瞬态时间点
+        "notes": "",
+    }
+
+
+def negative(video: str, duration: float, note: str = "阴性对照：无乒乓球") -> Dict:
+    """整段判定为没打球。用于有声书、影视剧等对照素材。"""
+    lab = empty(video, duration, complete=True)
+    lab["notes"] = note
+    return lab
+
+
+def path_for(video: str, label_dir: str) -> str:
+    stem = os.path.splitext(os.path.basename(video))[0]
+    return os.path.join(label_dir, stem + ".json")
+
+
+def load(path: str) -> Dict:
+    with open(path, "r", encoding="utf-8") as f:
+        lab = json.load(f)
+    if lab.get("schema") != SCHEMA:
+        raise ValueError("标注格式版本不符: %s" % path)
+    lab["playing"] = _normalize(lab.get("playing", []), lab["duration"])
+    return lab
+
+
+def save(lab: Dict, path: str) -> str:
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    lab["playing"] = _normalize(lab.get("playing", []), lab["duration"])
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(lab, f, ensure_ascii=False, indent=2)
+    return path
+
+
+def _normalize(intervals: List, duration: float) -> List[List[float]]:
+    """排序、裁剪到时长内、合并重叠。手工拖出来的区间常常有重叠。"""
+    out: List[List[float]] = []
+    for iv in sorted([[max(0.0, float(a)), min(duration, float(b))] for a, b in intervals]):
+        if iv[1] - iv[0] <= 1e-6:
+            continue
+        if out and iv[0] <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], iv[1])
+        else:
+            out.append(iv)
+    return [[round(a, 3), round(b, 3)] for a, b in out]
+
+
+def to_mask(intervals: List, duration: float, dt: float) -> np.ndarray:
+    """区间 -> 时间网格上的布尔掩码，评测用。"""
+    n = max(1, int(np.ceil(duration / dt)))
+    mask = np.zeros(n, dtype=bool)
+    for a, b in intervals:
+        mask[int(a / dt):int(np.ceil(b / dt))] = True
+    return mask
+
+
+def find(video: str, label_dir: str) -> Optional[Dict]:
+    p = path_for(video, label_dir)
+    return load(p) if os.path.exists(p) else None
