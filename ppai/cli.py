@@ -121,8 +121,8 @@ def main(argv=None) -> int:
     p.add_argument("--no-plot", action="store_true")
     p.add_argument("--top", type=int, help="highlight: 取前几个回合")
     p.add_argument("--minutes", type=float, help="highlight: 目标集锦时长（分钟）")
-    p.add_argument("--type", default="best",
-                   choices=["best", "longest", "kill", "weak", "all"],
+    p.add_argument("--type", default="auto",
+                   choices=["auto", "best", "longest", "kill", "weak", "power", "all"],
                    help="highlight: 集锦类型（对应方案模块七的四种）")
     args = p.parse_args(argv)
 
@@ -188,9 +188,18 @@ def main(argv=None) -> int:
             amps = audio.hit_amplitudes(hits, env_, fr_)
             m_t, m_v = motion.motion_curve(path, cfg["motion"])
             rs = highlight.score(highlight.rallies(hits, hcfg, amps), m_t, m_v, hcfg)
-            print("  %d 个瞬态 -> %d 个回合" % (len(hits), len(rs)))
-            kinds = (["best", "longest", "kill", "weak"]
-                     if args.type == "all" else [args.type])
+            vk = highlight.video_kind(rs, meta["duration"], hcfg)
+            print("  %d 个瞬态 -> %d 个回合 | 结构: %s（空档中位 %.1fs, 忙碌 %.0f%%）"
+                  % (len(hits), len(rs),
+                     "稀疏，可大幅压缩" if vk["kind"] == "sparse" else "密集，删不掉多少",
+                     vk["median_gap"], vk["busy"] * 100))
+            if args.type == "auto":
+                kinds = highlight.AUTO_THEMES.get(vk["kind"], ["best"])
+                print("  自动选题: %s" % " / ".join(kinds))
+            elif args.type == "all":
+                kinds = ["best", "longest", "kill", "weak", "power"]
+            else:
+                kinds = [args.type]
             stem = os.path.splitext(os.path.basename(path))[0][:40]
             for kind in kinds:
                 ranked = highlight.rank(rs, kind, hcfg)

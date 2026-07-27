@@ -70,6 +70,7 @@ def rallies(hits: np.ndarray, cfg: Dict, amps: Optional[np.ndarray] = None) -> L
         out.append({
             "start": float(ts[0]), "end": float(ts[-1]), "hits": len(ts),
             "power": float(np.percentile(av, 80)) if len(av) else 0.0,
+            "peak_power": float(av.max()) if len(av) else 0.0,
             # 绝杀用：最后两拍的力量。回合以一记重杀结束才算绝杀
             "tail_power": float(av[-2:].max()) if len(av) else 0.0,
             # 失误/结束用：这个回合是不是以「球落地连续弹跳」收尾
@@ -160,11 +161,40 @@ def score(rs: List[Dict], m_times: np.ndarray, m_vals: np.ndarray, cfg: Dict) ->
 #
 # 音频做不到的部分：**归属**。它只知道「这一下很响」，不知道是谁打的。
 # 做集锦不需要归属；做训练分析（方案第三阶段）必须有，那绕不开视觉。
+def video_kind(rs: List[Dict], duration: float, cfg: Dict) -> Dict:
+    """判断这段录像的结构类型，决定该用什么主题。
+
+    实测三类素材差异极大，同一套主题不可能都合适：
+      06a6c98c  空档中位 6.1s  忙碌 19%   两人对练，一半以上时间在捡球
+      352e7b27  空档中位 1.2s  忙碌 68%   连续对拉
+      dc393956  空档中位 1.5s  忙碌 60%   多球训练
+    稀疏型的剪辑价值在「删」（12 分钟压成 1 分钟本身就是产品）；
+    密集型没什么可删（压缩比才 2:1），价值在「选」—— 从一堆差不多的球里挑突出的。
+
+    只做二分。再细分（对练 vs 多球）需要知道场上有几个人，那是视觉问题。
+    """
+    if not rs:
+        return {"kind": "unknown", "busy": 0.0, "median_gap": 0.0}
+    starts = np.array([r["start"] for r in rs])
+    ends = np.array([r["end"] for r in rs])
+    gaps = starts[1:] - ends[:-1] if len(rs) > 1 else np.array([0.0])
+    busy = float(sum(ends - starts) / max(duration, 1e-6))
+    mg = float(np.median(gaps))
+    kind = "sparse" if mg >= cfg.get("sparse_gap_s", 4.0) else "dense"
+    return {"kind": kind, "busy": round(busy, 3), "median_gap": round(mg, 2)}
+
+
+# 稀疏型：有大量废料可删，综合集锦最有价值
+# 密集型：删不掉多少，要靠「最突出的那几拍」拉开差距
+AUTO_THEMES = {"sparse": ["best", "longest", "kill"],
+               "dense":  ["power", "longest", "kill"]}
+
 RANKERS = {
     "best":    "综合评分（相持长度 + 力量 + 频率 + 运动）",
     "longest": "最长相持 —— 按瞬态数排序",
     "kill":    "强收尾 —— 收尾力量/整体力量 最高（多为主动得分）",
     "weak":    "弱收尾 —— 收尾力量/整体力量 最低（多为自身失误）",
+    "power":   "力量集锦 —— 按回合内最强击球排序（密集素材用）",
 }
 
 
@@ -183,6 +213,9 @@ def rank(rs: List[Dict], kind: str, cfg: Dict) -> List[Dict]:
     """
     if kind == "longest":
         return sorted(rs, key=lambda r: (-r["hits"], -(r["end"] - r["start"])))
+    if kind == "power":
+        # 密集素材里回合长度都差不多，能拉开差距的是单拍的绝对力量
+        return sorted(rs, key=lambda r: -r.get("peak_power", r.get("power", 0.0)))
     if kind in ("kill", "weak"):
         def ratio(r):
             return r.get("tail_power", 0.0) / max(r.get("power", 0.0), 1e-6)
@@ -215,10 +248,12 @@ def select(rs: List[Dict], cfg: Dict, total_s: Optional[float] = None) -> List[D
             m["score"] = max(m["score"], r["score"])
             m["power"] = max(m["power"], r.get("power", 0.0))
             m["tail_power"] = max(m["tail_power"], r.get("tail_power", 0.0))
+            m["peak_power"] = max(m["peak_power"], r.get("peak_power", 0.0))
         else:
             merged.append({"_a": a, "_b": b, "hits": r["hits"], "score": r["score"],
                            "power": r.get("power", 0.0),
-                           "tail_power": r.get("tail_power", 0.0)})
+                           "tail_power": r.get("tail_power", 0.0),
+                           "peak_power": r.get("peak_power", 0.0)})
 
     out = []
     for i, m in enumerate(merged, 1):
