@@ -10,7 +10,8 @@ from typing import Dict
 
 import numpy as np
 
-from . import annotate, audio, config, detect, evaluate, labels, motion, render, scene, validate, viz
+from . import (annotate, audio, ball, config, detect, evaluate, highlight, labels,
+               motion, render, scene, validate, viz)
 
 
 def probe(path: str) -> Dict:
@@ -105,7 +106,8 @@ def analyze(path: str, cfg: Dict, out_dir: str, make_plot: bool = True) -> Dict:
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="ppai", description="乒乓球有效比赛检测原型")
     p.add_argument("command", choices=["probe", "analyze", "cut", "validate",
-                                       "annotate", "label-negative", "eval", "eval-hits"])
+                                       "annotate", "label-negative", "eval", "eval-hits",
+                                       "highlight"])
     p.add_argument("paths", nargs="*")
     p.add_argument("--pos", help="validate: 正样本 glob")
     p.add_argument("--neg", help="validate: 阴性对照 glob")
@@ -117,6 +119,8 @@ def main(argv=None) -> int:
     p.add_argument("-s", "--set", action="append", dest="overrides",
                    help="覆盖配置，如 -s audio.k_mad=3.0 -s fuse.enter=0.4")
     p.add_argument("--no-plot", action="store_true")
+    p.add_argument("--top", type=int, help="highlight: 取前几个回合")
+    p.add_argument("--minutes", type=float, help="highlight: 目标集锦时长（分钟）")
     args = p.parse_args(argv)
 
     cfg = config.override(config.load(args.config), args.overrides)
@@ -169,6 +173,32 @@ def main(argv=None) -> int:
 
         if args.command == "probe":
             print(json.dumps(probe(path), ensure_ascii=False, indent=2))
+            continue
+
+        if args.command == "highlight":
+            hcfg = dict(cfg["highlight"])
+            if args.top:
+                hcfg["top_n"] = args.top
+            meta = probe(path)
+            pcm = audio.extract_pcm(path, cfg["audio"]["sr"])
+            hits, _, _, _ = audio.detect_hits(pcm, cfg["audio"])
+            m_t, m_v = motion.motion_curve(path, cfg["motion"])
+            rs = highlight.score(highlight.rallies(hits, hcfg), m_t, m_v, hcfg)
+            picked = highlight.select(rs, hcfg,
+                                      args.minutes * 60 if args.minutes else None)
+            print("  %d 个瞬态 -> %d 个回合 -> 选中 %d 个" % (len(hits), len(rs), len(picked)))
+            for s_ in picked:
+                print("    #%-2d %6.1f-%6.1fs (%4.1fs, %3d拍, %.1f拍/秒, 评分 %.3f)"
+                      % (s_["id"], s_["start"], s_["end"], s_["duration"],
+                         s_["hit_count"], s_["hit_rate"], s_["confidence"]))
+            if not picked:
+                print("  没有找到回合"); continue
+            stem = os.path.splitext(os.path.basename(path))[0][:40]
+            parts = render.cut(path, picked, os.path.join(args.out, stem + "_hl"), cfg["render"])
+            final = render.concat(parts, os.path.join(args.out, stem + "_highlight.mp4"))
+            total = sum(s_["duration"] for s_ in picked)
+            print("  输出: %s  (%.0f 秒，压缩比 %.0f:1)"
+                  % (final, total, meta["duration"] / max(total, 1e-6)))
             continue
 
         if args.command == "label-negative":
