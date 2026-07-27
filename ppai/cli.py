@@ -119,6 +119,8 @@ def main(argv=None) -> int:
     p.add_argument("-s", "--set", action="append", dest="overrides",
                    help="覆盖配置，如 -s audio.k_mad=3.0 -s fuse.enter=0.4")
     p.add_argument("--no-plot", action="store_true")
+    p.add_argument("--no-dedupe", action="store_true",
+                   help="highlight: 允许不同主题之间出现重复片段")
     p.add_argument("--top", type=int, help="highlight: 取前几个回合")
     p.add_argument("--minutes", type=float, help="highlight: 目标集锦时长（分钟）")
     p.add_argument("--type", default="auto",
@@ -216,10 +218,18 @@ def main(argv=None) -> int:
             else:
                 kinds = [args.type]
             stem = os.path.splitext(os.path.basename(path))[0][:40]
+            used: list = []
             for kind in kinds:
                 ranked = highlight.rank(rs, kind, hcfg)
                 picked = highlight.select(ranked, hcfg,
                                           args.minutes * 60 if args.minutes else None)
+                if len(kinds) > 1 and not args.no_dedupe:
+                    before = len(picked)
+                    picked = highlight.dedupe(picked, used, hcfg)
+                    if before != len(picked):
+                        print("\n  [%s] 去掉 %d 个与前面主题重叠的片段"
+                              % (kind, before - len(picked)))
+                used.extend(picked)
                 print("\n  [%s] %s" % (kind, highlight.RANKERS[kind]))
                 if not picked:
                     print("    没有符合条件的片段"); continue

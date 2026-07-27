@@ -186,7 +186,7 @@ def video_kind(rs: List[Dict], duration: float, cfg: Dict) -> Dict:
 
 # 稀疏型：有大量废料可删，综合集锦最有价值
 # 密集型：删不掉多少，要靠「最突出的那几拍」拉开差距
-AUTO_THEMES = {"sparse": ["best", "longest", "kill"],
+AUTO_THEMES = {"sparse": ["best", "longest", "power"],
                "dense":  ["power", "longest", "kill"]}
 
 # 给前端用的展示信息：名称、一句话说明、以及适合哪种素材。
@@ -198,10 +198,10 @@ THEMES = [
      "applicable": ["sparse"]},
     {"id": "longest", "name": "最长对拉", "desc": "来回拍数最多的相持",
      "applicable": []},
-    {"id": "kill",    "name": "最帅击球", "desc": "一板打死对手的终结球",
+    {"id": "power",   "name": "最帅击球", "desc": "单拍力量最大的球",
      "applicable": []},
-    {"id": "power",   "name": "最重扣杀", "desc": "单拍力量最大的球",
-     "applicable": ["dense"]},
+    {"id": "kill",    "name": "制胜一击", "desc": "一板打死对手的终结球",
+     "applicable": []},
     {"id": "weak",    "name": "失误集合", "desc": "软掉收尾的回合（多为自身失误）",
      "applicable": []},
     {"id": "records", "name": "单项之最", "desc": "最长相持 / 最强击球 / 最强收尾 各一段",
@@ -213,7 +213,7 @@ RANKERS = {
     "longest": "最长相持 —— 按瞬态数排序",
     "kill":    "强收尾 —— 收尾力量/整体力量 最高（多为主动得分）",
     "weak":    "弱收尾 —— 收尾力量/整体力量 最低（多为自身失误）",
-    "power":   "力量集锦 —— 按回合内最强击球排序（密集素材用）",
+    "power":   "最帅击球 —— 按回合内单拍最强击球排序",
     "records": "单项之最 —— 最长相持 / 最强击球 / 最强收尾 各一段",
 }
 
@@ -252,6 +252,26 @@ def rank(rs: List[Dict], kind: str, cfg: Dict) -> List[Dict]:
         cand = [r for r in rs if r["hits"] >= cfg.get("end_min_hits", 4)]
         return sorted(cand, key=ratio, reverse=(kind == "kill"))
     return sorted(rs, key=lambda r: -r["score"])
+
+
+def dedupe(picked: List[Dict], used: List[Dict], cfg: Dict) -> List[Dict]:
+    """去掉与已出片主题重叠的片段。
+
+    一次生成多个主题时，同一段可能在两类里都排前面 —— 用户看到重复内容
+    会觉得分类没意义。实测「最帅击球」和「最长对拉」前 10 名重叠 3-6/10
+    （力量与回合长度天然相关：回合越长，出现重击的机会越多），
+    所以去重是必要的，光换指标解决不了。
+    """
+    if not used:
+        return picked
+    out = []
+    for p in picked:
+        if not any(min(p["end"], u["end"]) - max(p["start"], u["start"])
+                   > cfg.get("dedupe_overlap_s", 0.5) for u in used):
+            out.append(p)
+    for i, p in enumerate(out, 1):
+        p["id"] = i
+    return out
 
 
 def select(rs: List[Dict], cfg: Dict, total_s: Optional[float] = None) -> List[Dict]:
