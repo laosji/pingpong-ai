@@ -280,8 +280,17 @@ def dedupe(picked: List[Dict], used: List[Dict], cfg: Dict) -> List[Dict]:
 
 
 def select(rs: List[Dict], cfg: Dict, total_s: Optional[float] = None) -> List[Dict]:
-    """取前 N 个（或凑满目标时长），再按时间顺序排列 —— 集锦按时间线看更自然。"""
+    """取前 N 个（或凑满目标时长），再按时间顺序排列 —— 集锦按时间线看更自然。
+
+    这里的 clip_min_s 和 rallies() 的 min_duration_s 是两回事：
+    后者是「算不算一个回合」（对着真值调，越准越好，0.3 秒的短回合也算），
+    前者是「值不值得剪成一段」（0.3 秒的片段没法看）。
+    统计要准，出片要能看，两个目标不同，阈值不能共用。
+    """
     pad_a, pad_b = cfg["pad_start_s"], cfg["pad_end_s"]
+    clip_min = float(cfg.get("clip_min_s", 0.0))
+    if clip_min > 0:
+        rs = [r for r in rs if r["end"] - r["start"] >= clip_min]
     picked, acc = [], 0.0
     for r in rs:
         if total_s is not None and acc >= total_s:

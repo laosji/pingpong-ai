@@ -11,7 +11,22 @@ from typing import Dict
 import numpy as np
 
 from . import (annotate, audio, ball, config, detect, evaluate, highlight, labels,
-               motion, render, scene, stats, validate, viz)
+               motion, render, rerank, scene, stats, validate, viz)
+
+
+def _hits(path: str, cfg: Dict):
+    """抽音轨 -> 检测候选 -> （可选）重排。返回 (hits, amps)。"""
+    pcm = audio.extract_pcm(path, cfg["audio"]["sr"])
+    hits, env, _, fr = audio.detect_hits(pcm, cfg["audio"])
+    rc = cfg.get("rerank", {})
+    if rc.get("enabled") and len(hits):
+        model = rerank.load(rc.get("model", rerank.MODEL_PATH))
+        if model is not None:
+            before = len(hits)
+            hits = rerank.apply(path, hits, model, rc.get("keep_ratio", 0.6))
+            print("  重排: %d -> %d 个候选（模型训练自 %d 份标注）"
+                  % (before, len(hits), len(model["files"])))
+    return hits, audio.hit_amplitudes(hits, env, fr)
 
 
 def probe(path: str) -> Dict:
@@ -107,7 +122,8 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="ppai", description="乒乓球有效比赛检测原型")
     p.add_argument("command", choices=["probe", "analyze", "cut", "validate",
                                        "annotate", "label-negative", "eval", "eval-hits",
-                                       "highlight", "stats", "themes"])
+                                       "highlight", "stats", "themes",
+                                       "rerank-train"])
     p.add_argument("paths", nargs="*")
     p.add_argument("--pos", help="validate: 正样本 glob")
     p.add_argument("--neg", help="validate: 阴性对照 glob")
@@ -130,6 +146,10 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
 
     cfg = config.override(config.load(args.config), args.overrides)
+
+    if args.command == "rerank-train":
+        rerank.train(args.labels, cfg)
+        return 0
 
     if args.command == "themes":
         # 前端拉这个列表渲染选项
@@ -191,9 +211,7 @@ def main(argv=None) -> int:
             if args.top:
                 hcfg["top_n"] = args.top
             meta = probe(path)
-            pcm = audio.extract_pcm(path, cfg["audio"]["sr"])
-            hits, env_, _, fr_ = audio.detect_hits(pcm, cfg["audio"])
-            amps = audio.hit_amplitudes(hits, env_, fr_)
+            hits, amps = _hits(path, cfg)
             m_t, m_v = motion.motion_curve(path, cfg["motion"])
             rs = highlight.score(highlight.rallies(hits, hcfg, amps), m_t, m_v, hcfg)
             vk = highlight.video_kind(rs, meta["duration"], hcfg)
@@ -249,9 +267,7 @@ def main(argv=None) -> int:
 
         if args.command == "stats":
             meta = probe(path)
-            pcm = audio.extract_pcm(path, cfg["audio"]["sr"])
-            hits, env_, _, fr_ = audio.detect_hits(pcm, cfg["audio"])
-            amps = audio.hit_amplitudes(hits, env_, fr_)
+            hits, amps = _hits(path, cfg)
             hcfg = cfg["highlight"]
             m_t, m_v = motion.motion_curve(path, cfg["motion"])
             rs = highlight.score(highlight.rallies(hits, hcfg, amps), m_t, m_v, hcfg)

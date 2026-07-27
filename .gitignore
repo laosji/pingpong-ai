@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 labels/*.html
 negatives/
+models/
+cache/
