@@ -91,3 +91,38 @@ def report(res: Dict) -> None:
         print("      达到方案 MVP 指标（有效片段识别 80%）")
     else:
         print("      未达方案 MVP 指标 0.80")
+
+
+def hit_level(det: "np.ndarray", truth: "np.ndarray", ranges, tol: float = 0.35) -> Dict:
+    """击球级评测，只在 ranges（穷尽标注时段）内计分。
+
+    匹配用**容差判定**而非一一配对：
+      * 召回 —— 每个人工标记 ±tol 内有检出即算命中
+      * 准确 —— 每个检出 ±tol 内有任一人工标记即算正确
+    这样人只需标「球拍击中球」，紧随其后的台面弹跳落在同一容差窗内，
+    不会被当成误报。一一配对会把弹跳算错，从而低估准确率。
+    """
+    import numpy as np
+
+    def inside(ts):
+        m = np.zeros(len(ts), bool)
+        for a, b in ranges:
+            m |= (ts >= a) & (ts <= b)
+        return m
+
+    det = np.asarray(det)[inside(np.asarray(det))] if len(det) else np.zeros(0)
+    truth = np.asarray(truth)[inside(np.asarray(truth))] if len(truth) else np.zeros(0)
+    if len(truth) == 0:
+        return {"n_truth": 0, "n_det": len(det), "recall": float("nan"),
+                "precision": float("nan"), "f1": float("nan")}
+
+    hit_t = np.array([np.any(np.abs(det - t) <= tol) for t in truth]) if len(det) \
+        else np.zeros(len(truth), bool)
+    ok_d = np.array([np.any(np.abs(truth - x) <= tol) for x in det]) if len(det) \
+        else np.zeros(0, bool)
+
+    rec = float(hit_t.mean())
+    prec = float(ok_d.mean()) if len(det) else float("nan")
+    f1 = 2 * prec * rec / (prec + rec) if prec and rec and (prec + rec) else float("nan")
+    return {"n_truth": len(truth), "n_det": len(det),
+            "recall": rec, "precision": prec, "f1": f1}
