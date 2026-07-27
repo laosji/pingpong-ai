@@ -1,0 +1,38 @@
+# 乒乓球有效比赛检测 —— 全部可调参数
+# 拿到真实录像后，主要动 audio.k_mad / fuse.enter / fuse.exit 这三个。
+
+audio:
+  sr: 16000              # 重采样目标采样率
+  n_fft: 512             # 32ms 窗
+  hop: 160               # 10ms 步进 -> 100 帧/秒
+  fmin: 800              # 击球声能量下限 (Hz)
+  fmax: 6000             # 上限。人声基频/球馆低频噪音被挡在 800Hz 以下
+  k_mad: 4.0             # 自适应阈值 = 局部中位数 + k * MAD。调高=更严格，漏检增加
+  noise_win_s: 2.0       # 局部噪声统计窗长（秒）
+  min_gap_s: 0.06        # 两次击球最小间隔。近台快撕约 6 拍/秒 -> 0.06s 是下限
+
+motion:
+  enabled: true
+  sample_fps: 5.0        # 运动分析抽帧率，够用且快
+  width: 320             # 降采样宽度
+  pixel_noise: 12        # 像素差绝对值低于此值视为噪点（0-255）
+  roi: null              # 可选 [x, y, w, h]，归一化 0-1。标定球台后填入可大幅抗干扰
+
+fuse:
+  dt: 0.1                # 融合时间轴分辨率（秒）
+  hit_window_s: 1.5      # 击球密度统计半窗
+  w_audio: 0.6           # 方案里是 音频40/运动40/姿态20；原型无姿态，按 6:4 分配
+  w_motion: 0.4
+  enter: 0.45            # 进入 PLAYING 的分数阈值
+  exit: 0.25             # 跌破此值开始计时退出（滞回，防止抖动切碎）
+  min_enter_s: 1.0       # 需连续超过 enter 多久才算真的开打
+  end_silence_s: 5.0     # 多久没动静判定结束（方案指定 5 秒）
+  min_segment_s: 3.0     # 过短片段丢弃
+  merge_gap_s: 2.0       # 间隔小于此值的相邻片段合并
+  pad_start_s: 1.0       # 片段前扩（补上发球引拍）
+  pad_end_s: 1.5         # 片段后扩（补上得分后的反应）
+
+render:
+  crf: 20
+  preset: veryfast
+  audio_bitrate: 160k
