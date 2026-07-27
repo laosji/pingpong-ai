@@ -11,7 +11,7 @@ from typing import Dict
 import numpy as np
 
 from . import (annotate, audio, ball, config, detect, evaluate, highlight, labels,
-               motion, render, scene, validate, viz)
+               motion, render, scene, stats, validate, viz)
 
 
 def probe(path: str) -> Dict:
@@ -107,7 +107,7 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="ppai", description="乒乓球有效比赛检测原型")
     p.add_argument("command", choices=["probe", "analyze", "cut", "validate",
                                        "annotate", "label-negative", "eval", "eval-hits",
-                                       "highlight"])
+                                       "highlight", "stats"])
     p.add_argument("paths", nargs="*")
     p.add_argument("--pos", help="validate: 正样本 glob")
     p.add_argument("--neg", help="validate: 阴性对照 glob")
@@ -122,7 +122,8 @@ def main(argv=None) -> int:
     p.add_argument("--top", type=int, help="highlight: 取前几个回合")
     p.add_argument("--minutes", type=float, help="highlight: 目标集锦时长（分钟）")
     p.add_argument("--type", default="auto",
-                   choices=["auto", "best", "longest", "kill", "weak", "power", "all"],
+                   choices=["auto", "best", "longest", "kill", "weak", "power",
+                            "records", "all"],
                    help="highlight: 集锦类型（对应方案模块七的四种）")
     args = p.parse_args(argv)
 
@@ -197,7 +198,7 @@ def main(argv=None) -> int:
                 kinds = highlight.AUTO_THEMES.get(vk["kind"], ["best"])
                 print("  自动选题: %s" % " / ".join(kinds))
             elif args.type == "all":
-                kinds = ["best", "longest", "kill", "weak", "power"]
+                kinds = ["best", "longest", "kill", "weak", "power", "records"]
             else:
                 kinds = [args.type]
             stem = os.path.splitext(os.path.basename(path))[0][:40]
@@ -220,6 +221,25 @@ def main(argv=None) -> int:
                     parts, os.path.join(args.out, "%s_%s.mp4" % (stem, kind)))
                 total = sum(s_["duration"] for s_ in picked)
                 print("    输出: %s  (%.0f 秒)" % (final, total))
+            continue
+
+        if args.command == "stats":
+            meta = probe(path)
+            pcm = audio.extract_pcm(path, cfg["audio"]["sr"])
+            hits, env_, _, fr_ = audio.detect_hits(pcm, cfg["audio"])
+            amps = audio.hit_amplitudes(hits, env_, fr_)
+            hcfg = cfg["highlight"]
+            m_t, m_v = motion.motion_curve(path, cfg["motion"])
+            rs = highlight.score(highlight.rallies(hits, hcfg, amps), m_t, m_v, hcfg)
+            vk = highlight.video_kind(rs, meta["duration"], hcfg)
+            s_ = stats.summarize(rs, hits, amps, meta["duration"], vk)
+            stats.report(s_)
+            os.makedirs(args.out, exist_ok=True)
+            dst = os.path.join(args.out, os.path.splitext(
+                os.path.basename(path))[0][:40] + "_stats.json")
+            with open(dst, "w", encoding="utf-8") as f:
+                json.dump(s_, f, ensure_ascii=False, indent=2)
+            print("\n  已保存: %s" % dst)
             continue
 
         if args.command == "label-negative":

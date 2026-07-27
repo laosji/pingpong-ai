@@ -195,6 +195,7 @@ RANKERS = {
     "kill":    "强收尾 —— 收尾力量/整体力量 最高（多为主动得分）",
     "weak":    "弱收尾 —— 收尾力量/整体力量 最低（多为自身失误）",
     "power":   "力量集锦 —— 按回合内最强击球排序（密集素材用）",
+    "records": "单项之最 —— 最长相持 / 最强击球 / 最强收尾 各一段",
 }
 
 
@@ -213,6 +214,15 @@ def rank(rs: List[Dict], kind: str, cfg: Dict) -> List[Dict]:
     """
     if kind == "longest":
         return sorted(rs, key=lambda r: (-r["hits"], -(r["end"] - r["start"])))
+    if kind == "records":
+        # 每项纪录各取一段。可能撞车（同一回合既最长又最强），去重后按时间排
+        if not rs:
+            return []
+        peak = [r.get("peak_power", 0.0) for r in rs]
+        tailr = [r.get("tail_power", 0.0) / max(r.get("power", 1.0), 1e-6) for r in rs]
+        idx = {int(np.argmax([r["hits"] for r in rs])),
+               int(np.argmax(peak)), int(np.argmax(tailr))}
+        return [rs[i] for i in sorted(idx)]
     if kind == "power":
         # 密集素材里回合长度都差不多，能拉开差距的是单拍的绝对力量
         return sorted(rs, key=lambda r: -r.get("peak_power", r.get("power", 0.0)))
