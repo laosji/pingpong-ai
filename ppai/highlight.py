@@ -46,17 +46,35 @@ def rallies(hits: np.ndarray, cfg: Dict, amps: Optional[np.ndarray] = None) -> L
         av = np.asarray(amps)[g].astype(float)
         # 落地弹跳会让间隔一直很密，2.5 秒的分段规则不会在那里断开，
         # 回合于是被拖长，把捡球画面卷进来。在弹跳起点截断。
+        bounce_end = False
         if cfg.get("trim_bounce", True):
+            # 1) 回合内部混进了弹跳 —— 截断
             b = find_bounce_decay(ts, cfg)
             if b is not None and b > ts[0]:
                 keep = ts <= b
                 ts, av = ts[keep], av[keep]
+                bounce_end = True
+            else:
+                # 2) gap 降到 0.7 之后弹跳会被切成**独立的簇**，不再落在回合内部。
+                #    所以要往回合结束之后看：紧随其后的瞬态是不是弹跳衰减。
+                tail_win = float(cfg.get("bounce_lookahead_s", 3.0))
+                after = np.asarray(hits)
+                after = after[(after > ts[-1]) & (after <= ts[-1] + tail_win)]
+                if len(after) >= cfg["bounce_min_count"]:
+                    if find_bounce_decay(np.concatenate([ts[-1:], after]), cfg) is not None:
+                        bounce_end = True
         if len(ts) == 0:
             continue
         # 力量：取较强的那部分击球，而不是均值 —— 一个回合里总有轻挡和过渡球，
         # 用均值会把爆发力强的回合和平稳的回合拉平
-        out.append({"start": float(ts[0]), "end": float(ts[-1]), "hits": len(ts),
-                    "power": float(np.percentile(av, 80)) if len(av) else 0.0})
+        out.append({
+            "start": float(ts[0]), "end": float(ts[-1]), "hits": len(ts),
+            "power": float(np.percentile(av, 80)) if len(av) else 0.0,
+            # 绝杀用：最后两拍的力量。回合以一记重杀结束才算绝杀
+            "tail_power": float(av[-2:].max()) if len(av) else 0.0,
+            # 失误/结束用：这个回合是不是以「球落地连续弹跳」收尾
+            "ended_with_bounce": bounce_end,
+        })
     return [r for r in out
             if r["end"] - r["start"] >= cfg["min_duration_s"] and r["hits"] >= cfg["min_hits"]]
 
@@ -131,6 +149,39 @@ def score(rs: List[Dict], m_times: np.ndarray, m_vals: np.ndarray, cfg: Dict) ->
         r["motion"] = round(float(m), 3)
         r["power"] = round(float(r.get("power", 0.0)), 1)
         r["hit_rate"] = round(float(r["hits"] / max(r["end"] - r["start"], 1e-6)), 2)
+    return rs
+
+
+RANKERS = {
+    "best":    "综合评分（相持长度 + 力量 + 频率 + 运动）",
+    "longest": "最长相持 —— 按瞬态数排序",
+    "kill":    "绝杀 —— 按回合最后两拍的力量排序",
+    # error 目前检不出东西，保留实现但不要指望它 —— 见下方说明
+    "error":   "回合速终 —— 拍数少且以落地弹跳收尾（当前不可用，见文档）",
+}
+
+
+def rank(rs: List[Dict], kind: str, cfg: Dict) -> List[Dict]:
+    """按不同集锦类型排序（方案模块七的四种类型）。
+
+    error 的现状：**检不出东西**。判据要求连续 4 次间隔递减且比值一致，
+    而检测器准确率仅 0.381，漏掉一次弹跳单调链就断。实测穷尽标注窗内
+    收紧时 0 检出，放宽到比值标准差 0.30 时检出 1 个且是假的（准确率 0%%）。
+    不要靠放宽阈值让它「有输出」—— 那是在制造结果。
+    要修得先把击球检测准确率提上去（见 README 第 9 节的候选重排）。
+
+    关于 error：音频区分不了「失误」和「得分」—— 球下网、出界、对方没接到，
+    结局都是球落地弹跳，声学上完全一样。所以这里给的是「回合很快就结束了」，
+    它大概率是失误，但也可能是一记好球直接得分。不要当成失误识别。
+    """
+    if kind == "longest":
+        return sorted(rs, key=lambda r: (-r["hits"], -(r["end"] - r["start"])))
+    if kind == "kill":
+        return sorted(rs, key=lambda r: -r.get("tail_power", 0.0))
+    if kind == "error":
+        cand = [r for r in rs if r.get("ended_with_bounce")
+                and r["hits"] <= cfg.get("error_max_hits", 8)]
+        return sorted(cand, key=lambda r: r["hits"])
     return sorted(rs, key=lambda r: -r["score"])
 
 
@@ -156,9 +207,11 @@ def select(rs: List[Dict], cfg: Dict, total_s: Optional[float] = None) -> List[D
             m["hits"] += r["hits"]
             m["score"] = max(m["score"], r["score"])
             m["power"] = max(m["power"], r.get("power", 0.0))
+            m["tail_power"] = max(m["tail_power"], r.get("tail_power", 0.0))
         else:
             merged.append({"_a": a, "_b": b, "hits": r["hits"], "score": r["score"],
-                           "power": r.get("power", 0.0)})
+                           "power": r.get("power", 0.0),
+                           "tail_power": r.get("tail_power", 0.0)})
 
     out = []
     for i, m in enumerate(merged, 1):
@@ -169,7 +222,8 @@ def select(rs: List[Dict], cfg: Dict, total_s: Optional[float] = None) -> List[D
             "end": round(m["_b"], 2),
             "duration": round(dur, 2),
             "hit_count": m["hits"],
-            "power": m.get("power", 0.0),
+            "power": round(m.get("power", 0.0), 1),
+            "tail_power": round(m.get("tail_power", 0.0), 1),
             "hit_rate": round(m["hits"] / max(dur, 1e-6), 2),
             "confidence": round(m["score"], 4),
         })

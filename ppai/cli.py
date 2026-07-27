@@ -121,6 +121,9 @@ def main(argv=None) -> int:
     p.add_argument("--no-plot", action="store_true")
     p.add_argument("--top", type=int, help="highlight: 取前几个回合")
     p.add_argument("--minutes", type=float, help="highlight: 目标集锦时长（分钟）")
+    p.add_argument("--type", default="best",
+                   choices=["best", "longest", "kill", "error", "all"],
+                   help="highlight: 集锦类型（对应方案模块七的四种）")
     args = p.parse_args(argv)
 
     cfg = config.override(config.load(args.config), args.overrides)
@@ -185,21 +188,28 @@ def main(argv=None) -> int:
             amps = audio.hit_amplitudes(hits, env_, fr_)
             m_t, m_v = motion.motion_curve(path, cfg["motion"])
             rs = highlight.score(highlight.rallies(hits, hcfg, amps), m_t, m_v, hcfg)
-            picked = highlight.select(rs, hcfg,
-                                      args.minutes * 60 if args.minutes else None)
-            print("  %d 个瞬态 -> %d 个回合 -> 选中 %d 个" % (len(hits), len(rs), len(picked)))
-            for s_ in picked:
-                print("    #%-2d %6.1f-%6.1fs (%4.1fs, %3d个瞬态, %.1f/秒, 力量 %3.0f, 评分 %.3f)"
-                      % (s_["id"], s_["start"], s_["end"], s_["duration"],
-                         s_["hit_count"], s_["hit_rate"], s_["power"], s_["confidence"]))
-            if not picked:
-                print("  没有找到回合"); continue
+            print("  %d 个瞬态 -> %d 个回合" % (len(hits), len(rs)))
+            kinds = (["best", "longest", "kill", "error"]
+                     if args.type == "all" else [args.type])
             stem = os.path.splitext(os.path.basename(path))[0][:40]
-            parts = render.cut(path, picked, os.path.join(args.out, stem + "_hl"), cfg["render"])
-            final = render.concat(parts, os.path.join(args.out, stem + "_highlight.mp4"))
-            total = sum(s_["duration"] for s_ in picked)
-            print("  输出: %s  (%.0f 秒，压缩比 %.0f:1)"
-                  % (final, total, meta["duration"] / max(total, 1e-6)))
+            for kind in kinds:
+                ranked = highlight.rank(rs, kind, hcfg)
+                picked = highlight.select(ranked, hcfg,
+                                          args.minutes * 60 if args.minutes else None)
+                print("\n  [%s] %s" % (kind, highlight.RANKERS[kind]))
+                if not picked:
+                    print("    没有符合条件的片段"); continue
+                for s_ in picked:
+                    print("    #%-2d %6.1f-%6.1fs (%4.1fs, %3d个瞬态, 力量 %3.0f, 收尾力量 %3.0f)"
+                          % (s_["id"], s_["start"], s_["end"], s_["duration"],
+                             s_["hit_count"], s_["power"], s_["tail_power"]))
+                parts = render.cut(path, picked,
+                                   os.path.join(args.out, "%s_hl_%s" % (stem, kind)),
+                                   cfg["render"])
+                final = render.concat(
+                    parts, os.path.join(args.out, "%s_%s.mp4" % (stem, kind)))
+                total = sum(s_["duration"] for s_ in picked)
+                print("    输出: %s  (%.0f 秒)" % (final, total))
             continue
 
         if args.command == "label-negative":
