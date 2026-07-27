@@ -15,6 +15,11 @@ def _run(cmd: List[str]) -> None:
 
 def cut(video_path: str, segments: List[Dict], out_dir: str, cfg: Dict) -> List[str]:
     os.makedirs(out_dir, exist_ok=True)
+    # 清掉上次运行的残留：这次片段变少时旧文件会留在目录里，
+    # 谁要是直接拼接整个目录就会拿到多余的片段。
+    for f in os.listdir(out_dir):
+        if f.startswith("seg_") and f.endswith(".mp4"):
+            os.unlink(os.path.join(out_dir, f))
     paths = []
     for s in segments:
         dst = os.path.join(out_dir, "seg_%03d.mp4" % s["id"])
