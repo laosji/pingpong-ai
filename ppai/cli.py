@@ -105,7 +105,7 @@ def analyze(path: str, cfg: Dict, out_dir: str, make_plot: bool = True) -> Dict:
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="ppai", description="乒乓球有效比赛检测原型")
     p.add_argument("command", choices=["probe", "analyze", "cut", "validate",
-                                       "annotate", "label-negative", "eval"])
+                                       "annotate", "label-negative", "eval", "eval-hits"])
     p.add_argument("paths", nargs="*")
     p.add_argument("--pos", help="validate: 正样本 glob")
     p.add_argument("--neg", help="validate: 阴性对照 glob")
@@ -126,6 +126,33 @@ def main(argv=None) -> int:
             p.error("validate 需要 --pos 和 --neg")
         res = validate.run(args.pos, args.neg, cfg)
         return 0 if res["passed"] else 1
+
+    if args.command == "eval-hits":
+        for v in args.paths:
+            lab = labels.find(v, args.labels)
+            if lab is None:
+                print("没有标注: %s" % os.path.basename(v)); continue
+            ranges = labels.scored_ranges(lab)
+            if not ranges:
+                print("标注没有 complete_ranges，无法算准确率（抽样标注只能算召回）")
+                continue
+            # 击球被拖成短区间存放，取中点；F 键标的 hits 一并计入
+            truth = sorted([ (a+b)/2.0 for a, b in lab["playing"] if b-a <= 1.0 ]
+                           + list(lab.get("hits", [])))
+            pcm = audio.extract_pcm(v, cfg["audio"]["sr"])
+            det, _, _, _ = audio.detect_hits(pcm, cfg["audio"])
+            r = evaluate.hit_level(np.array(det), np.array(truth), ranges)
+            span = sum(b-a for a, b in ranges)
+            print("\n>> %s" % os.path.basename(v))
+            print("   穷尽标注区间: %s  合计 %.0f 秒"
+                  % (", ".join("%.0f-%.0f" % (a, b) for a, b in ranges), span))
+            print("   人工 %d 次击球 (%.2f 次/秒) | 检出 %d 个瞬态 (%.2f 次/秒)"
+                  % (r["n_truth"], r["n_truth"]/span, r["n_det"], r["n_det"]/span))
+            print("   召回 %.3f   准确 %.3f   F1 %.3f" % (r["recall"], r["precision"], r["f1"]))
+            if r["precision"] == r["precision"] and r["precision"] < 0.5:
+                print("   -> 每 1 个真击球伴随约 %.1f 个误报"
+                      % (1.0/max(r["precision"], 1e-6) - 1))
+        return 0
 
     if args.command == "eval":
         res = evaluate.evaluate(
