@@ -142,7 +142,16 @@ video{max-width:100%;display:block}
 .seg a{display:grid;place-items:center;padding:0 7px;color:var(--ink-3);
   text-decoration:none;font-size:12px;border-left:1px solid var(--line)}
 .seg a:hover{color:var(--accent);background:var(--accent-wash)}
+/* ✕ 是低频操作，默认收起 —— 常态只留「跳转」和「下载」两个高频动作 */
+.seg a.rej{display:none}
+.segs[data-edit="1"] .seg a.rej{display:grid}
 .seg a.rej:hover{color:var(--warn);background:var(--warn-wash)}
+.mark{background:transparent;border:1px solid var(--line-2);color:var(--ink-3);
+  border-radius:999px;padding:4px 11px;font-size:12px;cursor:pointer;
+  transition:all .12s ease;white-space:nowrap}
+.mark:hover{border-color:var(--warn);color:var(--warn)}
+.mark[aria-pressed="true"]{border-color:var(--warn);color:var(--warn);
+  background:var(--warn-wash)}
 .seg[data-rejected="1"]{opacity:.45;border-color:var(--warn)}
 .seg[data-rejected="1"] button{text-decoration:line-through}
 .fb{margin-top:12px;font-size:12.5px;color:var(--ink-3);display:flex;
@@ -183,7 +192,9 @@ video{max-width:100%;display:block}
 const $ = s => document.querySelector(s);
 const el = (t,c,h) => { const e=document.createElement(t);
   if(c) e.className=c; if(h!=null) e.innerHTML=h; return e; };
-const mmss = s => `${Math.floor(s/60)}:${String(Math.round(s%60)).padStart(2,'0')}`;
+// 先对总秒数取整再拆分。写成 Math.round(s%60) 会让 119.7s 显示成 1:60
+const mmss = s => { const t = Math.round(s);
+  return `${Math.floor(t/60)}:${String(t%60).padStart(2,'0')}`; };
 const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 let videos=[], themes=[], cur=null, pickTheme='auto', poll=null;
@@ -324,11 +335,14 @@ function done(j){
     h += `<div class="card">
       <div class="card-hd">
         <h3>${esc(r.name)} · ${r.clips} 段 / ${r.seconds} 秒</h3>
-        <a class="btn ghost" href="${r.url}" download>下载</a>
+        <span style="display:flex;gap:8px;align-items:center">
+          <button class="mark" data-mark="${idx}" aria-pressed="false">标记问题</button>
+          <a class="btn ghost" href="${r.url}" download>下载</a>
+        </span>
       </div>
       ${player(r.url, portrait)}
       <div class="segs" data-idx="${idx}">
-        <div class="segs-hd">${r.clips} 个片段 · 点时间跳转，↓ 单独下载，✕ 标记「这段不对」</div>
+        <div class="segs-hd">${r.clips} 个片段 · 点时间跳转，↓ 单独下载</div>
         ${r.segments.map((x,i)=>
         `<span class="seg" data-i="${i}">
            <button data-off="${x.offset}" data-idx="${idx}">${mmss(x.start)}–${mmss(x.end)}</button>
@@ -346,6 +360,20 @@ function done(j){
 
   // 「这段不对」：只声明这个区间没有有效击球，不要求用户精确到某一拍。
   // 这正是重排器要的监督信号 —— 区间内所有候选都是可信负例。
+  // 「标记问题」进入编辑态才显示 ✕
+  $('#out').addEventListener('click', e => {
+    const m = e.target.closest('.mark');
+    if(!m) return;
+    const segs = $('#out').querySelector(`.segs[data-idx="${m.dataset.mark}"]`);
+    const on = segs.dataset.edit === '1';
+    segs.dataset.edit = on ? '' : '1';
+    m.setAttribute('aria-pressed', on ? 'false' : 'true');
+    m.textContent = on ? '标记问题' : '完成';
+    segs.querySelector('.segs-hd').textContent = on
+      ? `${segs.querySelectorAll('.seg').length} 个片段 · 点时间跳转，↓ 单独下载`
+      : '点 ✕ 标记「这段不对」，会作为负例回流训练';
+  });
+
   $('#out').addEventListener('click', async e => {
     const a = e.target.closest('a.rej');
     if(!a) return;
