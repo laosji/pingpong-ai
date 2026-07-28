@@ -327,6 +327,13 @@ def select(rs: List[Dict], cfg: Dict, total_s: Optional[float] = None) -> List[D
                            "tail_power": r.get("tail_power", 0.0),
                            "peak_power": r.get("peak_power", 0.0)})
 
+    # 成片最后一段多留一点：整片在最后一拍后立刻黑屏很仓促。
+    # 只动最后一段而不是全局加长 —— 全局 +1 秒会让真打球占比从 74% 掉到 60%。
+    extra = float(cfg.get("final_pad_end_s", 0.0))
+    if extra > 0 and merged:
+        last = max(merged, key=lambda m: m["_b"])
+        last["_b"] += extra
+
     out = []
     for i, m in enumerate(merged, 1):
         dur = m["_b"] - m["_a"]

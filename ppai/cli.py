@@ -222,7 +222,10 @@ def main(argv=None) -> int:
             if args.type == "auto":
                 kinds = highlight.AUTO_THEMES.get(vk["kind"], ["best"])
                 print("  自动选题: %s" % " / ".join(kinds))
-            elif args.type not in ("all",):
+            elif args.type == "all":
+                kinds = ["best", "longest", "kill", "weak", "power", "records"]
+            else:
+                kinds = [args.type]
                 # 用户手选了不适合这段素材的主题：不拒绝，但要说明会得到什么
                 th = next((t for t in highlight.THEMES if t["id"] == args.type), None)
                 if th and th["applicable"] and vk["kind"] not in th["applicable"]:
@@ -231,10 +234,6 @@ def main(argv=None) -> int:
                              "稀疏（有大量捡球可删）" if "sparse" in th["applicable"] else "密集",
                              "密集（几乎全在打球）" if vk["kind"] == "dense" else "稀疏")
                           + "结果仍可用但压缩比会很低。")
-            elif args.type == "all":
-                kinds = ["best", "longest", "kill", "weak", "power", "records"]
-            else:
-                kinds = [args.type]
             stem = os.path.splitext(os.path.basename(path))[0][:40]
             used: list = []
             for kind in kinds:
