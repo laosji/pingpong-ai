@@ -1,8 +1,15 @@
-"""剪辑页面的后端。直接调现有管线，不复制逻辑。
+"""Pipo AI 后端。直接调 ppai 管线，不复制逻辑。
 
-任务放线程池异步跑：一个 12 分钟的视频要 10-30 秒，同步接口会把浏览器挂住。
-进度只做粗粒度（分析/剪辑/完成）—— 管线内部没有进度回调，
-硬编码百分比会是假的，不如只报当前阶段。
+三件事必须一起做，缺一个另外两个就是假的：
+  * 持久化 —— 用户、视频归属、任务状态存 SQLite，重启不丢
+  * 鉴权   —— 一人一条魔法链接，token 换 httpOnly cookie
+  * 隔离   —— 每个用户只看得到自己上传的视频和自己的成片
+
+特别注意：成片**不能**用 StaticFiles 挂载。挂载会绕过鉴权，
+任何人猜到文件名就能下别人的视频。必须走带归属校验的路由。
+
+任务放线程里异步跑：12 分钟视频要 10-30 秒，同步接口会把浏览器挂住。
+进度只报阶段不报百分比 —— 管线内部没有进度回调，硬编码的百分比是假的。
 """
 from __future__ import annotations
 
@@ -12,40 +19,87 @@ import os
 import threading
 import time
 import traceback
-import uuid
 from typing import Dict, List
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from ppai import audio, config, highlight, labels as L, motion, render, rerank, stats
+from ppai import (audio, config, highlight, labels as L, motion, render, rerank,
+                  stats, store)
 from ppai.cli import probe
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(ROOT, "out")
 UPLOADS = os.path.join(ROOT, "uploads")
-VIDEO_DIRS = [os.path.expanduser("~/Downloads/PP-video"), UPLOADS]
+LABELS = os.path.join(ROOT, "labels")
 ALLOWED_EXT = (".mp4", ".mov", ".m4v")
 
-# ── 两条最小防护 ────────────────────────────────────────────
-# 没有这两条，一次手滑（传个 10GB 文件）或者用久了（out/ 只增不减）
-# 就能把服务弄挂。规模再小也得有。
+# 两条最小防护：没有它们，一次手滑（传 10GB）或者用久了
+# （out/ 只增不减，实测一个 12 分钟视频产出 115MB）就能把服务弄挂。
 MAX_UPLOAD_MB = int(os.environ.get("PIPO_MAX_UPLOAD_MB", "1024"))
 KEEP_DAYS = float(os.environ.get("PIPO_KEEP_DAYS", "7"))
 MAX_OUT_GB = float(os.environ.get("PIPO_MAX_OUT_GB", "10"))
 CLEAN_EVERY_S = 1800
+COOKIE = "pipo_sid"
 
 app = FastAPI(title="Pipo AI")
-_jobs: Dict[str, Dict] = {}
-_lock = threading.Lock()
+
+
+# ── 鉴权 ──────────────────────────────────────────────────
+def current_user(request: Request) -> Dict:
+    u = store.user_by_token(request.cookies.get(COOKIE, ""))
+    if not u:
+        raise HTTPException(401, "未登录")
+    return u
+
+
+def user_dir(base: str, uid: str) -> str:
+    d = os.path.join(base, uid)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+@app.get("/enter")
+def enter(t: str):
+    """魔法链接：/enter?t=TOKEN 换成 httpOnly cookie 后跳回首页。
+
+    token 只在这一次出现在 URL 里，之后都在 cookie 中。
+    httpOnly 让页面脚本读不到它，降低 XSS 的影响面。
+    """
+    u = store.user_by_token(t)
+    if not u:
+        return RedirectResponse("/login.html?bad=1", status_code=303)
+    r = RedirectResponse("/", status_code=303)
+    r.set_cookie(COOKIE, t, httponly=True, samesite="lax",
+                 max_age=90 * 86400, path="/")
+    return r
+
+
+@app.post("/api/logout")
+def logout():
+    r = JSONResponse({"ok": True})
+    r.delete_cookie(COOKIE, path="/")
+    return r
+
+
+@app.get("/api/me")
+def me(u: Dict = Depends(current_user)):
+    return {"id": u["id"], "name": u["name"], "is_admin": bool(u["is_admin"])}
+
+
+# ── 数据模型 ──────────────────────────────────────────────
+class Job(BaseModel):
+    video: str                 # video id
+    themes: List[str] = ["auto"]
+    top: int = 10
 
 
 class Recut(BaseModel):
     video: str
     theme: str
-    keep: List[int]     # 保留的片段序号（1 起）
+    keep: List[int]
 
 
 class Feedback(BaseModel):
@@ -53,12 +107,6 @@ class Feedback(BaseModel):
     start: float
     end: float
     verdict: str = "not_playing"
-
-
-class Job(BaseModel):
-    video: str
-    themes: List[str] = ["auto"]
-    top: int = 10
 
 
 def _fingerprint(path: str) -> str:
@@ -74,101 +122,88 @@ def _fingerprint(path: str) -> str:
     return h.hexdigest()
 
 
-def _list_videos() -> List[Dict]:
-    out, seen = [], set()
-    for d in VIDEO_DIRS:
-        if not os.path.isdir(d):
-            continue
-        for f in sorted(os.listdir(d)):
-            if not f.lower().endswith(ALLOWED_EXT):
-                continue
-            p = os.path.join(d, f)
-            try:
-                fp = _fingerprint(p)
-                if fp in seen:      # 同一个视频既在素材目录又在 uploads，只列一次
-                    continue
-                m = probe(p)
-            except Exception:
-                continue
-            seen.add(fp)
-            out.append({"path": p, "name": f, "duration": m["duration"],
-                        "width": m["width"], "height": m["height"],
-                        "quality": m["quality_score"], "note": m["recommendation"],
-                        "note_en": m.get("recommendation_en", ""), "fp": fp})
-    return out
-
-
-def _run(job_id: str, req: Job) -> None:
+# ── 任务 ──────────────────────────────────────────────────
+def _run(jid: str, uid: str, video_path: str, req: Job) -> None:
     def step(msg: str) -> None:
-        with _lock:
-            _jobs[job_id]["stage"] = msg
+        store.update_job(jid, stage=msg)
     try:
         cfg = config.load()
         hcfg = dict(cfg["highlight"])
         hcfg["top_n"] = req.top
         step("读取音轨")
-        pcm = audio.extract_pcm(req.video, cfg["audio"]["sr"])
+        pcm = audio.extract_pcm(video_path, cfg["audio"]["sr"])
         hits, env, _, fr = audio.detect_hits(pcm, cfg["audio"])
         rc = cfg.get("rerank", {})
         if rc.get("enabled") and len(hits):
             model = rerank.load(rc.get("model", rerank.MODEL_PATH))
             if model is not None:
                 step("重排候选")
-                hits = rerank.apply(req.video, hits, model, rc.get("keep_ratio", 0.6))
+                hits = rerank.apply(video_path, hits, model, rc.get("keep_ratio", 0.6))
         amps = audio.hit_amplitudes(hits, env, fr)
         step("分析画面运动")
-        m_t, m_v = motion.motion_curve(req.video, cfg["motion"])
+        m_t, m_v = motion.motion_curve(video_path, cfg["motion"])
         rs = highlight.score(highlight.rallies(hits, hcfg, amps), m_t, m_v, hcfg)
-        meta = probe(req.video)
+        meta = probe(video_path)
         vk = highlight.video_kind(rs, meta["duration"], hcfg)
         summary = stats.summarize(rs, hits, amps, meta["duration"], vk,
                                   busy_gap=hcfg.get("busy_gap_s", 0.3))
 
         kinds = req.themes
         if kinds == ["auto"]:
-            # 页面是单选，自动模式也只出一个 —— 取该结构下推荐的第一个主题
             kinds = highlight.AUTO_THEMES.get(vk["kind"], ["best"])[:1]
-        stem = os.path.splitext(os.path.basename(req.video))[0][:40]
+
+        odir = user_dir(OUT, uid)
+        stem = os.path.splitext(os.path.basename(video_path))[0][:40]
         results, used = [], []
         for kind in kinds:
             step("剪辑：%s" % highlight.RANKERS.get(kind, kind).split(" ")[0])
-            picked = highlight.select(highlight.rank(rs, kind, hcfg), hcfg)
-            if len(kinds) > 1:
-                picked = highlight.dedupe(picked, used, hcfg)
+            if kind == "trim":
+                picked = highlight.trim_idle(hits, meta["duration"], hcfg)
+            else:
+                picked = highlight.select(highlight.rank(rs, kind, hcfg), hcfg)
+                if len(kinds) > 1:
+                    picked = highlight.dedupe(picked, used, hcfg)
             used.extend(picked)
             if not picked:
                 results.append({"theme": kind, "empty": True})
                 continue
             seg_dir = "%s_hl_%s" % (stem, kind)
-            parts = render.cut(req.video, picked, os.path.join(OUT, seg_dir), cfg["render"])
-            final = render.concat(parts, os.path.join(OUT, "%s_%s.mp4" % (stem, kind)))
-            # 每个片段单独可下载/可跳转。offset 是它在拼接成片里的起点，
-            # 前端据此把主播放器 seek 过去。
+            parts = render.cut(video_path, picked, os.path.join(odir, seg_dir),
+                               cfg["render"])
+            final = render.concat(parts, os.path.join(odir, "%s_%s.mp4" % (stem, kind)))
             off = 0.0
             for s_, part in zip(picked, parts):
-                s_["url"] = "/out/%s/%s" % (seg_dir, os.path.basename(part))
+                s_["url"] = "/media/%s/%s" % (seg_dir, os.path.basename(part))
                 s_["offset"] = round(off, 2)
                 off += s_["duration"]
+            th = next((t for t in highlight.THEMES if t["id"] == kind), {})
             results.append({
                 "theme": kind,
-                "name": next((t["name"] for t in highlight.THEMES if t["id"] == kind), kind),
-                "url": "/out/" + os.path.basename(final),
+                "name": th.get("name", kind),
+                "name_en": th.get("name_en", kind),
+                "url": "/media/" + os.path.basename(final),
                 "seconds": round(sum(s["duration"] for s in picked), 1),
                 "clips": len(picked),
                 "segments": picked,
             })
-        with _lock:
-            _jobs[job_id].update(state="done", stage="完成", results=results,
-                                 stats=summary, kind=vk)
+        store.update_job(jid, state="done", stage="完成",
+                         payload={"results": results, "stats": summary, "kind": vk})
     except Exception as e:
         traceback.print_exc()
-        with _lock:
-            _jobs[job_id].update(state="error", stage="失败", error=str(e))
+        store.update_job(jid, state="error", stage="失败", payload={"error": str(e)})
 
 
+# ── 接口 ──────────────────────────────────────────────────
 @app.get("/api/videos")
-def videos():
-    return _list_videos()
+def videos(u: Dict = Depends(current_user)):
+    out = []
+    for v in store.list_videos(u["id"]):
+        if not os.path.exists(v["path"]):     # 文件被清理掉了就不列
+            continue
+        out.append({k: v[k] for k in
+                    ("id", "name", "duration", "width", "height", "quality",
+                     "note", "note_en")})
+    return out
 
 
 @app.get("/api/themes")
@@ -176,51 +211,32 @@ def themes():
     return highlight.THEMES
 
 
-@app.post("/api/jobs")
-def create(req: Job):
-    if not os.path.exists(req.video):
-        raise HTTPException(404, "视频不存在")
-    jid = uuid.uuid4().hex[:12]
-    with _lock:
-        _jobs[jid] = {"id": jid, "state": "running", "stage": "排队中",
-                      "video": req.video, "started": time.time()}
-    threading.Thread(target=_run, args=(jid, req), daemon=True).start()
-    return {"id": jid}
-
-
-@app.get("/api/jobs/{jid}")
-def job(jid: str):
-    with _lock:
-        j = _jobs.get(jid)
-    if not j:
-        raise HTTPException(404, "任务不存在")
-    return JSONResponse(j)
-
-
 @app.post("/api/upload")
-async def upload(request: Request, file: UploadFile = File(...)):
+async def upload(request: Request, file: UploadFile = File(...),
+                 u: Dict = Depends(current_user)):
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in ALLOWED_EXT:
         raise HTTPException(400, "只支持 %s" % "/".join(ALLOWED_EXT))
     limit = MAX_UPLOAD_MB << 20
-    # Content-Length 先挡一道（快速拒绝，不用读完），
-    # 但它是客户端给的、可以撒谎，所以边写边数才是真正的防线。
+    # Content-Length 先挡一道（快速拒绝），但它是客户端给的、可以撒谎，
+    # 所以边写边数才是真正的防线。
     try:
         if int(request.headers.get("content-length") or 0) > limit * 1.05:
             raise HTTPException(413, "文件超过 %d MB 上限" % MAX_UPLOAD_MB)
     except ValueError:
         pass
-    # 只取文件名，丢掉任何路径成分 —— 上传的 filename 是客户端给的，不可信
+
+    udir = user_dir(UPLOADS, u["id"])
     safe = os.path.basename(file.filename or "video" + ext).replace("/", "_")
-    os.makedirs(UPLOADS, exist_ok=True)
-    dst = os.path.join(UPLOADS, safe)
+    dst = os.path.join(udir, safe)
     n = 1
     while os.path.exists(dst):
-        stem, e = os.path.splitext(safe)
-        dst = os.path.join(UPLOADS, "%s_%d%s" % (stem, n, e)); n += 1
+        st, e = os.path.splitext(safe)
+        dst = os.path.join(udir, "%s_%d%s" % (st, n, e)); n += 1
+
     written = 0
     with open(dst, "wb") as fh:
-        while chunk := await file.read(1 << 20):     # 分块写，避免整个视频进内存
+        while chunk := await file.read(1 << 20):
             written += len(chunk)
             if written > limit:
                 fh.close(); os.unlink(dst)
@@ -232,105 +248,107 @@ async def upload(request: Request, file: UploadFile = File(...)):
         os.unlink(dst)
         raise HTTPException(400, "无法解析这个视频")
 
-    # 已经有同一个视频就复用，不留副本 —— 否则列表里会出现两条一模一样的
-    fp = _fingerprint(dst)
-    for v in _list_videos():
-        if v["fp"] == fp and os.path.realpath(v["path"]) != os.path.realpath(dst):
-            os.unlink(dst)
-            return dict(v, existed=True)
-
-    return {"path": dst, "name": os.path.basename(dst), "duration": m["duration"],
-            "width": m["width"], "height": m["height"],
-            "quality": m["quality_score"], "note": m["recommendation"],
-            "note_en": m.get("recommendation_en", ""), "fp": fp}
+    rec = store.add_video(u["id"], {
+        "path": dst, "name": os.path.basename(dst), "fp": _fingerprint(dst),
+        "duration": m["duration"], "width": m["width"], "height": m["height"],
+        "quality": m["quality_score"], "note": m["recommendation"],
+        "note_en": m.get("recommendation_en", "")})
+    if rec["path"] != dst:            # 同一用户重复上传，复用旧记录
+        os.unlink(dst)
+    return {k: rec[k] for k in ("id", "name", "duration", "width", "height",
+                                "quality", "note", "note_en")}
 
 
-LABELS = os.path.join(ROOT, "labels")
-
-
-@app.post("/api/feedback")
-def feedback(fb: Feedback):
-    """用户点「这段不对」—— 数据闭环的入口。
-
-    只记「这个区间没有有效击球」，不要求用户精确到某一拍。
-    这正好是重排器需要的监督信号：区间内所有候选都是可信负例。
-    写进 negative_ranges 而非 complete_ranges，因为后者零击球会被
-    判定为标注遗漏并跳过（那条保护是为了挡住只标捡球没标击球的情况）。
-    """
-    if not os.path.exists(fb.video):
+@app.post("/api/jobs")
+def create(req: Job, u: Dict = Depends(current_user)):
+    v = store.get_video(u["id"], req.video)
+    if not v:
         raise HTTPException(404, "视频不存在")
-    if fb.end - fb.start <= 0.1:
-        raise HTTPException(400, "区间太短")
-    if fb.verdict != "not_playing":
-        raise HTTPException(400, "暂只支持 not_playing")
+    jid = store.create_job(u["id"], v["id"])
+    threading.Thread(target=_run, args=(jid, u["id"], v["path"], req),
+                     daemon=True).start()
+    return {"id": jid}
 
-    path = L.path_for(fb.video, LABELS)
-    lab = L.load(path) if os.path.exists(path) else L.empty(
-        fb.video, probe(fb.video)["duration"])
-    lab["negative_ranges"] = list(lab.get("negative_ranges") or []) + \
-        [[fb.start, fb.end]]
-    L.save(lab, path)
-    total = sum(b - a for a, b in lab["negative_ranges"])
-    return {"ok": True, "ranges": len(lab["negative_ranges"]),
-            "seconds": round(total, 1)}
+
+@app.get("/api/jobs/{jid}")
+def job(jid: str, u: Dict = Depends(current_user)):
+    j = store.get_job(u["id"], jid)
+    if not j:
+        raise HTTPException(404, "任务不存在")
+    return JSONResponse(j)
 
 
 @app.post("/api/recut")
-def recut(r: Recut):
-    """用户删掉某些片段后重新拼接。
+def recut(r: Recut, u: Dict = Depends(current_user)):
+    """删除片段后重新拼接。
 
-    删除和反馈是同一个动作的两面：用户说「这段不该在这儿」，
-    既要立刻从成片里拿掉（他期待的），也要记成负例（我们要的）。
-    分成两个按钮会让用户困惑，也会漏掉大部分反馈。
+    删除和反馈是同一动作的两面：用户说「这段不该在这儿」，
+    既要立刻从成片拿掉，也要记成负例。拆成两个按钮既让用户困惑，
+    也会漏掉大部分反馈。
 
-    片段已是独立文件，但仍走 render.cut 重切 —— 因为淡出是烘进最后一段的，
-    删掉末段后直接拼会丢掉淡出。重切 10 段只要两三秒。
+    重拼走 render.cut 重切而非直接拼现有片段 —— 淡出烘在最后一段里，
+    删掉末段后直接拼会丢淡出。
     """
-    if not os.path.exists(r.video):
+    v = store.get_video(u["id"], r.video)
+    if not v:
         raise HTTPException(404, "视频不存在")
-    jid = None
-    with _lock:
-        for k, j in _jobs.items():
-            if j.get("video") == r.video and j.get("state") == "done":
-                jid = k
-    if jid is None:
-        raise HTTPException(404, "没有可重剪的任务，请先生成")
-    with _lock:
-        res = next((x for x in _jobs[jid].get("results", [])
-                    if x.get("theme") == r.theme), None)
+    j = store.last_done_job(u["id"], v["id"])
+    if not j:
+        raise HTTPException(404, "没有可重剪的任务")
+    res = next((x for x in j.get("results", []) if x.get("theme") == r.theme), None)
     if not res or res.get("empty"):
         raise HTTPException(404, "没有这个主题的结果")
 
-    keep = [s_ for s_ in res["segments"] if s_["id"] in set(r.keep)]
+    keep = [s for s in res["segments"] if s["id"] in set(r.keep)]
     if not keep:
         raise HTTPException(400, "至少保留一个片段")
     cfg = config.load()
-    stem = os.path.splitext(os.path.basename(r.video))[0][:40]
+    odir = user_dir(OUT, u["id"])
+    stem = os.path.splitext(os.path.basename(v["path"]))[0][:40]
     seg_dir = "%s_hl_%s" % (stem, r.theme)
-    parts = render.cut(r.video, keep, os.path.join(OUT, seg_dir), cfg["render"])
-    final = render.concat(parts, os.path.join(OUT, "%s_%s.mp4" % (stem, r.theme)))
+    parts = render.cut(v["path"], keep, os.path.join(odir, seg_dir), cfg["render"])
+    final = render.concat(parts, os.path.join(odir, "%s_%s.mp4" % (stem, r.theme)))
     off = 0.0
     for s_, part in zip(keep, parts):
-        s_["url"] = "/out/%s/%s" % (seg_dir, os.path.basename(part))
-        s_["offset"] = round(off, 2)
-        off += s_["duration"]
-    with _lock:
-        res["segments"] = keep
-        res["clips"] = len(keep)
-        res["seconds"] = round(off, 1)
+        s_["url"] = "/media/%s/%s" % (seg_dir, os.path.basename(part))
+        s_["offset"] = round(off, 2); off += s_["duration"]
+    res["segments"] = keep; res["clips"] = len(keep); res["seconds"] = round(off, 1)
+    store.update_job(j["id"], payload={"results": j["results"],
+                                       "stats": j.get("stats"), "kind": j.get("kind")})
     # 加时间戳绕过浏览器缓存 —— 文件名没变，不加的话播放器还放旧的
-    return {"url": "/out/%s?v=%d" % (os.path.basename(final), int(time.time())),
+    return {"url": "/media/%s?v=%d" % (os.path.basename(final), int(time.time())),
             "clips": len(keep), "seconds": round(off, 1), "segments": keep}
 
 
+@app.post("/api/feedback")
+def feedback(fb: Feedback, u: Dict = Depends(current_user)):
+    """用户删片段 = 声明这段没有有效击球 = 可信负例。数据闭环的入口。
+
+    写进 negative_ranges 而非 complete_ranges：后者零击球会被判为标注遗漏
+    并跳过（那条保护是为了挡住「只标捡球没标击球」的情况）。
+    """
+    v = store.get_video(u["id"], fb.video)
+    if not v:
+        raise HTTPException(404, "视频不存在")
+    if fb.end - fb.start <= 0.1:
+        raise HTTPException(400, "区间太短")
+    path = L.path_for(v["path"], LABELS)
+    lab = L.load(path) if os.path.exists(path) else L.empty(v["path"], v["duration"])
+    lab["negative_ranges"] = list(lab.get("negative_ranges") or []) + [[fb.start, fb.end]]
+    L.save(lab, path)
+    return {"ok": True, "ranges": len(lab["negative_ranges"])}
+
+
 @app.get("/api/feedback")
-def feedback_summary():
-    """已积累多少反馈 —— 前端展示用，也方便判断什么时候值得重训。"""
+def feedback_summary(u: Dict = Depends(current_user)):
+    mine = {os.path.realpath(v["path"]) for v in store.list_videos(u["id"])}
     out, n, sec = [], 0, 0.0
     for f in sorted(glob.glob(os.path.join(LABELS, "*.json"))):
         try:
             lab = L.load(f)
         except Exception:
+            continue
+        if os.path.realpath(lab["video"]) not in mine:   # 只统计自己的
             continue
         r = lab.get("negative_ranges") or []
         if not r:
@@ -342,49 +360,61 @@ def feedback_summary():
     return {"videos": out, "total_ranges": n, "total_seconds": round(sec, 1)}
 
 
-@app.get("/source")
-def source(path: str):
-    """原视频，供页面预览。限制在允许的目录内，防止任意路径读取。"""
-    rp = os.path.realpath(path)
-    if not any(rp.startswith(os.path.realpath(d)) for d in VIDEO_DIRS):
-        raise HTTPException(403, "路径不允许")
-    if not os.path.exists(rp):
+@app.get("/media/{rest:path}")
+def media(rest: str, u: Dict = Depends(current_user)):
+    """成片和片段。**不能用 StaticFiles 挂载** —— 那会绕过鉴权，
+    任何人猜到文件名就能下别人的视频。"""
+    base = os.path.realpath(user_dir(OUT, u["id"]))
+    p = os.path.realpath(os.path.join(base, rest))
+    if not p.startswith(base + os.sep) or not os.path.isfile(p):
         raise HTTPException(404)
-    return FileResponse(rp)
+    return FileResponse(p)
 
 
+@app.get("/source")
+def source(id: str, u: Dict = Depends(current_user)):
+    """原视频预览。按 video id 取 —— 归属校验和取数据是同一次查询，
+    不给「忘了检查」留机会。"""
+    v = store.get_video(u["id"], id)
+    if not v or not os.path.exists(v["path"]):
+        raise HTTPException(404)
+    return FileResponse(v["path"])
+
+
+@app.get("/api/storage")
+def storage(u: Dict = Depends(current_user)):
+    d = os.path.join(OUT, u["id"])
+    total = 0
+    if os.path.isdir(d):
+        for root, _, fs in os.walk(d):
+            total += sum(os.path.getsize(os.path.join(root, f)) for f in fs
+                         if os.path.exists(os.path.join(root, f)))
+    return {"out_mb": round(total / (1 << 20), 1), "cap_gb": MAX_OUT_GB,
+            "keep_days": KEEP_DAYS, "max_upload_mb": MAX_UPLOAD_MB}
+
+
+# ── 清理 ──────────────────────────────────────────────────
 def _sweep() -> Dict:
     """清理 out/：先删过期的，还超容量就从最旧的继续删。
 
-    只动 out/ —— labels/ 是训练数据、models/ 是模型、cache/ 是嵌入缓存，
-    删了要重算或直接丢失，都不该被自动清理碰。
+    只动 out/ —— labels/ 是训练数据、models/ 是模型、cache/ 是嵌入缓存、
+    uploads/ 是用户原片，删了要重算或直接丢失，都不该被自动清理碰。
     """
     if not os.path.isdir(OUT):
-        return {"removed": 0, "freed_mb": 0}
+        return {"removed": 0, "freed_mb": 0, "remaining_mb": 0}
     now = time.time()
     items = []
-    for name in os.listdir(OUT):
-        p = os.path.join(OUT, name)
-        try:
-            if os.path.isdir(p):
-                sz = sum(os.path.getsize(os.path.join(p, f))
-                         for f in os.listdir(p) if os.path.isfile(os.path.join(p, f)))
-                mt = os.path.getmtime(p)
-            else:
-                sz, mt = os.path.getsize(p), os.path.getmtime(p)
-        except OSError:
-            continue
-        items.append([p, sz, mt])
+    for root, _, files in os.walk(OUT):
+        for f in files:
+            p = os.path.join(root, f)
+            try:
+                items.append([p, os.path.getsize(p), os.path.getmtime(p)])
+            except OSError:
+                pass
 
     def rm(p):
         try:
-            if os.path.isdir(p):
-                for f in os.listdir(p):
-                    os.unlink(os.path.join(p, f))
-                os.rmdir(p)
-            else:
-                os.unlink(p)
-            return True
+            os.unlink(p); return True
         except OSError:
             return False
 
@@ -398,7 +428,7 @@ def _sweep() -> Dict:
 
     cap = int(MAX_OUT_GB * (1 << 30))
     total = sum(x[1] for x in keep)
-    for p, sz, mt in sorted(keep, key=lambda x: x[2]):      # 最旧的先删
+    for p, sz, mt in sorted(keep, key=lambda x: x[2]):
         if total <= cap:
             break
         if rm(p):
@@ -418,18 +448,19 @@ def _sweeper():
         time.sleep(CLEAN_EVERY_S)
 
 
-@app.get("/api/storage")
-def storage():
-    total = 0
-    if os.path.isdir(OUT):
-        for root, _, fs in os.walk(OUT):
-            total += sum(os.path.getsize(os.path.join(root, f)) for f in fs
-                         if os.path.exists(os.path.join(root, f)))
-    return {"out_mb": round(total / (1 << 20), 1), "cap_gb": MAX_OUT_GB,
-            "keep_days": KEEP_DAYS, "max_upload_mb": MAX_UPLOAD_MB}
+# 未登录访问首页时跳登录页
+@app.middleware("http")
+async def gate(request: Request, call_next):
+    if request.url.path in ("/", "/index.html") and not store.user_by_token(
+            request.cookies.get(COOKIE, "")):
+        return RedirectResponse("/login.html", status_code=303)
+    return await call_next(request)
 
 
-os.makedirs(OUT, exist_ok=True)
+for _d in (OUT, UPLOADS, LABELS):
+    os.makedirs(_d, exist_ok=True)
+_n = store.orphan_running_jobs()
+if _n:
+    print("[startup] %d 个运行中的任务因重启被标记为中断" % _n)
 threading.Thread(target=_sweeper, daemon=True).start()
-app.mount("/out", StaticFiles(directory=OUT), name="out")
 app.mount("/", StaticFiles(directory=os.path.join(ROOT, "web"), html=True), name="web")

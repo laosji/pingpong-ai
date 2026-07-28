@@ -42,7 +42,8 @@ button,input,label{font-family:inherit}
 .brand{font-size:15px;font-weight:640;letter-spacing:-.01em}
 .tag{font-size:12.5px;color:var(--ink-3);padding-left:12px;
   border-left:1px solid var(--line)}
-.lang{margin-left:auto;border:1px solid var(--line-2);background:transparent;
+.who{margin-left:auto;font-size:12.5px;color:var(--ink-3)}
+.lang{border:1px solid var(--line-2);background:transparent;
   color:var(--ink-3);border-radius:999px;padding:4px 12px;font-size:12px;
   cursor:pointer;transition:all .12s ease;font-variant:tabular-nums}
 .lang:hover{border-color:var(--accent);color:var(--accent)}
@@ -175,7 +176,9 @@ video{max-width:100%;display:block}
   <div class="logo">P</div>
   <div class="brand">Pipo AI</div>
   <div class="tag" id="tagline">Your table tennis highlights, automatically</div>
+  <span class="who" id="who"></span>
   <button class="lang" id="lang" title="中文 / English">EN</button>
+  <button class="lang" id="out" title="退出 / Sign out">⏻</button>
 </div>
 
 <div class="shell">
@@ -237,6 +240,15 @@ LANG = localStorage.getItem('pipo_lang') || LANG;
 const t = (k,...a) => { const v = I18N[LANG][k]; return typeof v==='function'?v(...a):v; };
 const themeName = x => LANG==='en' ? (x.name_en||x.name) : x.name;
 const themeDesc = x => LANG==='en' ? (x.desc_en||x.desc) : x.desc;
+
+// 任何接口返回 401 都说明 cookie 没了或失效，统一跳登录页 ——
+// 否则页面会静默变空，用户不知道发生了什么
+const _fetch = window.fetch;
+window.fetch = async (...a) => {
+  const r = await _fetch(...a);
+  if(r.status === 401) location.href = '/login.html';
+  return r;
+};
 
 const $ = s => document.querySelector(s);
 const el = (t,c,h) => { const e=document.createElement(t);
@@ -303,7 +315,7 @@ function draw(){
   const v=cur, portrait=v.height>v.width;
   $('#stage').innerHTML = `
     <div class="card">
-      ${player('/source?path='+encodeURIComponent(v.path), portrait)}
+      ${player('/source?id='+v.id, portrait)}
       <div class="metrics">
         <div class="metric"><b>${mmss(v.duration)}</b><span>${t('duration')}</span></div>
         <div class="metric"><b>${v.width}×${v.height}</b><span>${t('resolution')}</span></div>
@@ -343,7 +355,7 @@ async function start(){
   let r;
   try{
     r = await fetch('/api/jobs',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({video:cur.path, themes:[pickTheme], top:10})}).then(x=>x.json());
+      body:JSON.stringify({video:cur.id, themes:[pickTheme], top:10})}).then(x=>x.json());
   }catch(e){ return fail(t('failed')); }
   clearInterval(poll);
   poll = setInterval(async ()=>{
@@ -383,7 +395,7 @@ function done(j){
     }
     h += `<div class="card">
       <div class="card-hd">
-        <h3>${esc(themeName(r))} · ${r.clips} / ${r.seconds}s</h3>
+        <h3>${esc(LANG==='en'?(r.name_en||r.name):r.name)} · ${r.clips} / ${r.seconds}s</h3>
         <span style="display:flex;gap:8px;align-items:center">
           <button class="mark" data-mark="${idx}" aria-pressed="false">${t('del')}</button>
           <a class="btn ghost" href="${r.url}" download>${t('download')}</a>
@@ -441,12 +453,12 @@ function done(j){
       // 删除 = 立刻从成片拿掉 + 记成负例，一个动作两件事
       await fetch('/api/feedback',{method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({video:cur.path, start:+a.dataset.s, end:+a.dataset.e})});
+        body:JSON.stringify({video:cur.id, start:+a.dataset.s, end:+a.dataset.e})});
       const keep = [...segs.querySelectorAll('.seg')]
         .filter(x => x.dataset.rejected !== '1').map(x => +x.dataset.sid);
       const r = await fetch('/api/recut',{method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({video:cur.path, theme:segs.dataset.theme, keep})
+        body:JSON.stringify({video:cur.id, theme:segs.dataset.theme, keep})
       }).then(x=>x.json());
       if(r.url){
         const v = card.querySelector('video');
@@ -546,5 +558,12 @@ $('#lang').onclick = ()=>{
   applyLang();
 };
 
+fetch('/api/me').then(r=>r.ok?r.json():null).then(m=>{
+  if(m) $('#who').textContent = m.name;
+});
+$('#out').onclick = async ()=>{
+  await fetch('/api/logout',{method:'POST'});
+  location.href = '/login.html';
+};
 boot().then(applyLang);
 </script>

@@ -7,3 +7,6 @@ negatives/
 models/
 cache/
 uploads/
+pipo.db
+pipo.db-wal
+pipo.db-shm
