@@ -60,6 +60,20 @@ def build_dataset(label_dir: str, cfg: Dict, cache_dir: str = "cache") -> Tuple:
         if not os.path.exists(video):
             print("  跳过（视频不存在）: %s" % os.path.basename(video))
             continue
+        # 只标了捡球、没标击球的区间，是标注遗漏而不是「这段真的没人打球」——
+        # 若当成穷尽标注，该区间所有候选（含真实击球）都会变成负例，
+        # 比不用这个区间更糟。阴性对照视频没有 pickup 标注，不会被误伤。
+        bad = [r for r in rng
+               if not any(r[0] <= (a + b) / 2 <= r[1] for a, b in lab["playing"])
+               and any(r[0] <= a <= r[1] for a, b in lab["pickup"])]
+        if bad:
+            for a, b in bad:
+                print("  ⚠️  %s 的 %.0f-%.0fs 标了捡球但零击球，判定为标注遗漏，已跳过"
+                      % (os.path.basename(path), a, b))
+            rng = [r for r in rng if r not in bad]
+            if not rng:
+                continue
+
         pcm = audio.extract_pcm(video, cfg["audio"]["sr"])
         det, _, _, _ = audio.detect_hits(pcm, cfg["audio"])
         keep = np.zeros(len(det), bool)
