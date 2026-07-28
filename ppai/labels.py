@@ -32,6 +32,10 @@ def empty(video: str, duration: float, complete: bool = False) -> Dict:
         # 把它当负样本会把漏标算成误报，得出的准确率毫无意义。
         # 召回则不受影响，全部标记都可用。
         "complete_ranges": [],
+        # 用户在产品里主动否定的区间（「这段不对」）。与 complete_ranges 分开：
+        # 后者零击球会被判为标注遗漏并跳过，而这里的零击球是**用户明确声称**的，
+        # 是可信的纯负例。混在一起会让保护机制把真实反馈也挡掉。
+        "negative_ranges": [],
         "playing": [],      # [[start, end], ...] 击球/有效比赛
         # 捡球区间：球落地后到重新开始之间。和 playing 分开存 ——
         # 这是**负例**，混进 playing 会让真值直接失效。
@@ -60,6 +64,7 @@ def load(path: str) -> Dict:
         raise ValueError("标注格式版本不符: %s" % path)
     lab["playing"] = _normalize(lab.get("playing", []), lab["duration"])
     lab["pickup"] = _normalize(lab.get("pickup", []), lab["duration"])
+    lab["negative_ranges"] = _normalize(lab.get("negative_ranges", []), lab["duration"])
     lab["complete_ranges"] = _normalize(lab.get("complete_ranges", []), lab["duration"])
     if lab.get("complete") and not lab["complete_ranges"]:
         lab["complete_ranges"] = [[0.0, lab["duration"]]]
@@ -75,6 +80,7 @@ def save(lab: Dict, path: str) -> str:
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     lab["playing"] = _normalize(lab.get("playing", []), lab["duration"])
     lab["pickup"] = _normalize(lab.get("pickup", []), lab["duration"])
+    lab["negative_ranges"] = _normalize(lab.get("negative_ranges", []), lab["duration"])
     with open(path, "w", encoding="utf-8") as f:
         json.dump(lab, f, ensure_ascii=False, indent=2)
     return path

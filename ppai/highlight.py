@@ -1,13 +1,16 @@
-"""精彩集锦（方案模块六「精彩评分」+ 模块七「自动剪辑」）。
+"""集锦与剪辑（方案模块六「精彩评分」+ 模块七「自动剪辑」）。
 
-为什么这个能用而「剪掉所有空闲」不能
-------------------------------------
-两者对指标的要求不同：
-  * 剪空闲要高召回 —— 漏掉任何一个回合都是缺陷。实测 F1 只有 0.618，不够。
-  * 集锦只要 top-K 精准 —— 从一小时里挑 10 个最精彩的，漏掉第 11 个无所谓。
+两种相反的取舍，都是有效产品
+----------------------------
+  * 集锦（best/longest/kill/...）押**准确**：挑出来的都好看，
+    但只覆盖一小部分。实测 top10 准确 0.921 / 召回 0.135。
+  * 完整版（trim）押**召回**：一个球都不漏，代价是多留些等待。
+    实测 pad=0.5 时准确 0.574 / 召回 0.927，12 分钟压到 4:12。
 
-实测（12 分钟录像，按瞬态数排序）：Top-10 命中率 100%，Top-20 为 90%。
-排序信号本身是可靠的，即使逐帧判定并不可靠。
+早期我用 F1=0.618 判定「剪空闲做不好」，这个结论下早了 ——
+F1 是对称指标，而这个需求是非对称的（漏球比多留难受得多）。
+对照商业产品 BetterPlay 剪同一段：保留 64%、准确 0.326、召回 0.962，
+它选的正是高召回工作点，而用户接受。
 """
 from __future__ import annotations
 
@@ -73,6 +76,8 @@ def rallies(hits: np.ndarray, cfg: Dict, amps: Optional[np.ndarray] = None) -> L
             "peak_power": float(av.max()) if len(av) else 0.0,
             # 绝杀用：最后两拍的力量。回合以一记重杀结束才算绝杀
             "tail_power": float(av[-2:].max()) if len(av) else 0.0,
+            # 最后一拍的时刻 —— 慢动作要精确对准它，不能靠猜片段中点
+            "last_hit": float(ts[-1]),
             # 失误/结束用：这个回合是不是以「球落地连续弹跳」收尾
             "ended_with_bounce": bounce_end,
         })
@@ -161,6 +166,45 @@ def score(rs: List[Dict], m_times: np.ndarray, m_vals: np.ndarray, cfg: Dict) ->
 #
 # 音频做不到的部分：**归属**。它只知道「这一下很响」，不知道是谁打的。
 # 做集锦不需要归属；做训练分析（方案第三阶段）必须有，那绕不开视觉。
+def trim_idle(hits: np.ndarray, duration: float, cfg: Dict) -> List[Dict]:
+    """完整版：只剪掉等待/捡球，保留所有打球内容。
+
+    和集锦是**相反的取舍**：集锦押准确（挑出来的都好看，但只覆盖一小部分），
+    这里押召回（一个球都不漏，代价是多留一些等待）。
+
+    做法极简：每个候选前后各留 pad 秒，合并重叠。对着真值实测
+    （06a6c98c 的 120-240s 窗口，17 个回合）：
+
+    | pad | 保留 | 准确 | 召回 | F1 |
+    |---|---|---|---|---|
+    | 0.5 | 35% | 0.574 | 0.927 | **0.709** |
+    | 1.0 | 52% | 0.417 | 1.000 | 0.589 |
+    | 1.5 | 64% | 0.337 | 1.000 | 0.504 |
+
+    对照 BetterPlay 的同一段：保留 64%、准确 0.326、召回 0.962、F1 0.487。
+    pad=0.5 时我们用一半的时长覆盖差不多的球。
+    """
+    pad = float(cfg.get("trim_pad_s", 0.5))
+    if len(hits) == 0:
+        return []
+    merged: List[List[float]] = []
+    for t in hits:
+        a, b = max(0.0, t - pad), min(duration, t + pad)
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    out = []
+    for i, (a, b) in enumerate(merged, 1):
+        if b - a < cfg.get("trim_min_s", 0.6):
+            continue
+        out.append({"id": len(out) + 1, "start": round(a, 2), "end": round(b, 2),
+                    "duration": round(b - a, 2), "hit_count": 0,
+                    "power": 0.0, "tail_power": 0.0, "last_hit": 0.0,
+                    "hit_rate": 0.0, "confidence": 1.0})
+    return out
+
+
 def video_kind(rs: List[Dict], duration: float, cfg: Dict) -> Dict:
     """判断这段录像的结构类型，决定该用什么主题。
 
@@ -210,6 +254,9 @@ THEMES = [
      "applicable": []},
     # 和「训练集锦」的区别要写清楚，否则两个名字听起来都像「最好的部分」，
     # 用户不知道该选哪个：精彩瞬间是三项纪录各一段（很短），训练集锦是综合排名（较长）
+    {"id": "trim",    "name": "完整版",
+     "desc": "只剪掉等待和捡球，一个球都不漏（约压到三分之一）",
+     "applicable": ["sparse"]},
     {"id": "records", "name": "精彩瞬间",
      "desc": "全场三项纪录各一段：最长相持、最强击球、最帅收尾（通常 10-30 秒）",
      "applicable": []},
@@ -221,6 +268,7 @@ RANKERS = {
     "kill":    "最帅击球 —— 收尾力量/整体力量 最高，一板打死对手",
     "weak":    "失误合集 —— 收尾力量/整体力量 最低",
     "power":   "最重扣杀 —— 按回合内单拍绝对力量排序",
+    "trim":    "完整版 —— 只剪掉等待，押召回不押准确",
     "records": "精彩瞬间 —— 全场三项纪录各一段",
 }
 
@@ -321,11 +369,13 @@ def select(rs: List[Dict], cfg: Dict, total_s: Optional[float] = None) -> List[D
             m["power"] = max(m["power"], r.get("power", 0.0))
             m["tail_power"] = max(m["tail_power"], r.get("tail_power", 0.0))
             m["peak_power"] = max(m["peak_power"], r.get("peak_power", 0.0))
+            m["last_hit"] = max(m["last_hit"], r.get("last_hit", 0.0))
         else:
             merged.append({"_a": a, "_b": b, "hits": r["hits"], "score": r["score"],
                            "power": r.get("power", 0.0),
                            "tail_power": r.get("tail_power", 0.0),
-                           "peak_power": r.get("peak_power", 0.0)})
+                           "peak_power": r.get("peak_power", 0.0),
+                           "last_hit": r.get("last_hit", 0.0)})
 
     # 成片最后一段多留一点：整片在最后一拍后立刻黑屏很仓促。
     # 只动最后一段而不是全局加长 —— 全局 +1 秒会让真打球占比从 74% 掉到 60%。
@@ -347,6 +397,7 @@ def select(rs: List[Dict], cfg: Dict, total_s: Optional[float] = None) -> List[D
             "hit_count": m["hits"],
             "power": round(m.get("power", 0.0), 1),
             "tail_power": round(m.get("tail_power", 0.0), 1),
+            "last_hit": round(m.get("last_hit", 0.0), 3),
             "hit_rate": round(m["hits"] / max(dur, 1e-6), 2),
             "confidence": round(m["score"], 4),
         })

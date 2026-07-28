@@ -54,7 +54,13 @@ def build_dataset(label_dir: str, cfg: Dict, cache_dir: str = "cache") -> Tuple:
     for path in sorted(glob.glob(os.path.join(label_dir, "*.json"))):
         lab = L.load(path)
         rng = L.scored_ranges(lab)
-        if not rng or not lab["playing"]:
+        neg = lab.get("negative_ranges") or []
+        # 用户在产品里点「这段不对」产生的区间：没有击球标注也能用 ——
+        # 那是用户明确声称「这里没有有效击球」，区间内所有候选都是可信负例。
+        # 这是数据闭环的入口：用户越用，负例越多，不需要人工逐拍标。
+        if not rng and not neg:
+            continue
+        if rng and not lab["playing"]:
             continue
         video = lab["video"]
         if not os.path.exists(video):
@@ -79,16 +85,24 @@ def build_dataset(label_dir: str, cfg: Dict, cache_dir: str = "cache") -> Tuple:
         keep = np.zeros(len(det), bool)
         for a, b in rng:
             keep |= (det >= a) & (det <= b)
+        in_neg = np.zeros(len(det), bool)
+        for a, b in neg:
+            in_neg |= (det >= a) & (det <= b)
+        keep |= in_neg
         cand = det[keep]
         if len(cand) == 0:
             continue
-        truth = np.array(sorted((a + b) / 2.0 for a, b in lab["playing"]))
-        yy = np.array([1 if np.any(np.abs(truth - c) <= TOL) else 0 for c in cand])
+        truth = (np.array(sorted((a + b) / 2.0 for a, b in lab["playing"]))
+                 if lab["playing"] else np.zeros(0))
+        yy = np.array([0 if in_neg[np.searchsorted(det, c)]
+                       else (1 if len(truth) and np.any(np.abs(truth - c) <= TOL) else 0)
+                       for c in cand])
         X.append(_features(video, cand, cache_dir))
         y.append(yy)
         groups.append(np.full(len(cand), os.path.basename(path)))
-        print("  %-40s %4d 候选 / %3d 真 (准确率 %.3f)"
-              % (os.path.basename(video)[:40], len(cand), yy.sum(), yy.mean()))
+        tag = "" if not neg else "  [含 %d 段用户反馈]" % len(neg)
+        print("  %-40s %4d 候选 / %3d 真 (准确率 %.3f)%s"
+              % (os.path.basename(video)[:40], len(cand), yy.sum(), yy.mean(), tag))
     if not X:
         raise SystemExit("没有可用标注：需要 complete_ranges 且有 playing 标记")
     return np.vstack(X), np.concatenate(y), np.concatenate(groups)

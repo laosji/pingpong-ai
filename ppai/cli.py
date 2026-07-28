@@ -141,7 +141,7 @@ def main(argv=None) -> int:
     p.add_argument("--minutes", type=float, help="highlight: 目标集锦时长（分钟）")
     p.add_argument("--type", default="auto",
                    choices=["auto", "best", "longest", "kill", "weak", "power",
-                            "records", "all"],
+                            "trim", "records", "all"],
                    help="highlight: 集锦类型（对应方案模块七的四种）")
     args = p.parse_args(argv)
 
@@ -237,9 +237,12 @@ def main(argv=None) -> int:
             stem = os.path.splitext(os.path.basename(path))[0][:40]
             used: list = []
             for kind in kinds:
-                ranked = highlight.rank(rs, kind, hcfg)
-                picked = highlight.select(ranked, hcfg,
-                                          args.minutes * 60 if args.minutes else None)
+                if kind == "trim":
+                    # 完整版不走排序/取前N —— 它要的是全覆盖，不是挑最好的
+                    picked = highlight.trim_idle(hits, meta["duration"], hcfg)
+                else:
+                    picked = highlight.select(highlight.rank(rs, kind, hcfg), hcfg,
+                                              args.minutes * 60 if args.minutes else None)
                 if len(kinds) > 1 and not args.no_dedupe:
                     before = len(picked)
                     picked = highlight.dedupe(picked, used, hcfg)

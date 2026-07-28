@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import glob
 import hashlib
 import os
 import threading
@@ -19,7 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from ppai import audio, config, highlight, motion, render, rerank, stats
+from ppai import audio, config, highlight, labels as L, motion, render, rerank, stats
 from ppai.cli import probe
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -31,6 +32,13 @@ ALLOWED_EXT = (".mp4", ".mov", ".m4v")
 app = FastAPI(title="乒乓球集锦")
 _jobs: Dict[str, Dict] = {}
 _lock = threading.Lock()
+
+
+class Feedback(BaseModel):
+    video: str
+    start: float
+    end: float
+    verdict: str = "not_playing"
 
 
 class Job(BaseModel):
@@ -207,6 +215,55 @@ async def upload(file: UploadFile = File(...)):
     return {"path": dst, "name": os.path.basename(dst), "duration": m["duration"],
             "width": m["width"], "height": m["height"],
             "quality": m["quality_score"], "note": m["recommendation"], "fp": fp}
+
+
+LABELS = os.path.join(ROOT, "labels")
+
+
+@app.post("/api/feedback")
+def feedback(fb: Feedback):
+    """用户点「这段不对」—— 数据闭环的入口。
+
+    只记「这个区间没有有效击球」，不要求用户精确到某一拍。
+    这正好是重排器需要的监督信号：区间内所有候选都是可信负例。
+    写进 negative_ranges 而非 complete_ranges，因为后者零击球会被
+    判定为标注遗漏并跳过（那条保护是为了挡住只标捡球没标击球的情况）。
+    """
+    if not os.path.exists(fb.video):
+        raise HTTPException(404, "视频不存在")
+    if fb.end - fb.start <= 0.1:
+        raise HTTPException(400, "区间太短")
+    if fb.verdict != "not_playing":
+        raise HTTPException(400, "暂只支持 not_playing")
+
+    path = L.path_for(fb.video, LABELS)
+    lab = L.load(path) if os.path.exists(path) else L.empty(
+        fb.video, probe(fb.video)["duration"])
+    lab["negative_ranges"] = list(lab.get("negative_ranges") or []) + \
+        [[fb.start, fb.end]]
+    L.save(lab, path)
+    total = sum(b - a for a, b in lab["negative_ranges"])
+    return {"ok": True, "ranges": len(lab["negative_ranges"]),
+            "seconds": round(total, 1)}
+
+
+@app.get("/api/feedback")
+def feedback_summary():
+    """已积累多少反馈 —— 前端展示用，也方便判断什么时候值得重训。"""
+    out, n, sec = [], 0, 0.0
+    for f in sorted(glob.glob(os.path.join(LABELS, "*.json"))):
+        try:
+            lab = L.load(f)
+        except Exception:
+            continue
+        r = lab.get("negative_ranges") or []
+        if not r:
+            continue
+        t = sum(b - a for a, b in r)
+        n += len(r); sec += t
+        out.append({"video": os.path.basename(lab["video"]),
+                    "ranges": len(r), "seconds": round(t, 1)})
+    return {"videos": out, "total_ranges": n, "total_seconds": round(sec, 1)}
 
 
 @app.get("/source")

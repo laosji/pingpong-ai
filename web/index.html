@@ -142,6 +142,12 @@ video{max-width:100%;display:block}
 .seg a{display:grid;place-items:center;padding:0 7px;color:var(--ink-3);
   text-decoration:none;font-size:12px;border-left:1px solid var(--line)}
 .seg a:hover{color:var(--accent);background:var(--accent-wash)}
+.seg a.rej:hover{color:var(--warn);background:var(--warn-wash)}
+.seg[data-rejected="1"]{opacity:.45;border-color:var(--warn)}
+.seg[data-rejected="1"] button{text-decoration:line-through}
+.fb{margin-top:12px;font-size:12.5px;color:var(--ink-3);display:flex;
+  align-items:center;gap:8px;flex-wrap:wrap}
+.fb b{color:var(--ink-2);font-weight:600}
 .segs-hd{font-size:11.5px;color:var(--ink-3);width:100%;margin-bottom:2px}
 
 @media (max-width:880px){
@@ -322,16 +328,40 @@ function done(j){
       </div>
       ${player(r.url, portrait)}
       <div class="segs" data-idx="${idx}">
-        <div class="segs-hd">${r.clips} 个片段 · 点时间跳转，点 ↓ 单独下载</div>
+        <div class="segs-hd">${r.clips} 个片段 · 点时间跳转，↓ 单独下载，✕ 标记「这段不对」</div>
         ${r.segments.map((x,i)=>
         `<span class="seg" data-i="${i}">
            <button data-off="${x.offset}" data-idx="${idx}">${mmss(x.start)}–${mmss(x.end)}</button>
            <a href="${x.url}" download title="下载这一段">↓</a>
+           <a class="rej" href="#" data-s="${x.start}" data-e="${x.end}"
+              title="这段不对 —— 会作为负例回流训练">✕</a>
          </span>`).join('')}
       </div>
     </div>`;
   });
+  h += `<div class="card"><div class="card-pad">
+      <div class="fb" id="fb"></div></div></div>`;
   $('#out').innerHTML = h;
+  loadFeedback();
+
+  // 「这段不对」：只声明这个区间没有有效击球，不要求用户精确到某一拍。
+  // 这正是重排器要的监督信号 —— 区间内所有候选都是可信负例。
+  $('#out').addEventListener('click', async e => {
+    const a = e.target.closest('a.rej');
+    if(!a) return;
+    e.preventDefault();
+    const seg = a.closest('.seg');
+    if(seg.dataset.rejected === '1') return;
+    seg.dataset.rejected = '1';
+    try{
+      const r = await fetch('/api/feedback',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({video:cur.path, start:+a.dataset.s, end:+a.dataset.e})
+      }).then(x=>x.json());
+      if(!r.ok) throw new Error();
+      loadFeedback();
+    }catch(err){ seg.dataset.rejected=''; }
+  });
 
   // 点片段 -> 主播放器跳到该片段在拼接成片里的位置
   $('#out').querySelectorAll('.seg button').forEach(b=>{
@@ -355,6 +385,17 @@ function done(j){
       wrap.querySelectorAll('.seg').forEach((s,i)=>s.dataset.on = i===k ? '1' : '');
     };
   });
+}
+
+async function loadFeedback(){
+  const el = $('#fb'); if(!el) return;
+  try{
+    const d = await fetch('/api/feedback').then(r=>r.json());
+    el.innerHTML = d.total_ranges
+      ? `已收到 <b>${d.total_ranges}</b> 处「这段不对」，共 <b>${d.total_seconds}</b> 秒，
+         来自 ${d.videos.length} 个视频。这些会作为负例并入下次训练。`
+      : '看到不对的片段就点 ✕ —— 这些反馈会直接变成训练数据，用得越多越准。';
+  }catch(e){ el.textContent=''; }
 }
 
 function upload(f){

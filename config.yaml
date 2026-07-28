@@ -47,6 +47,14 @@ render:
   # 动作被压缩在很短的窗口里，观感上像「定格渐黑」。1.6 秒衰减更缓，
   # 主体运动全程可见。音频淡出比画面更重要。
   fade_out_s: 1.6
+  # 慢动作：只放慢制胜那一拍前后的一小段，位置来自 last_hit 时间戳。
+  # 必须放在 render 段内 —— render.cut() 只拿到 cfg["render"]。
+  slowmo:
+    enabled: false       # 默认关闭：慢动作用多了会腻
+    factor: 0.6          # 放慢倍率。0.5 等于 15fps，乒乓球高速运动下卡顿明显
+    lead_s: 0.35         # 击球前保留多久
+    tail_s: 0.55         # 击球后保留多久
+    smooth: false        # 插帧补流畅（minterpolate），质量好但慢
   crf: 20
   preset: veryfast
   audio_bitrate: 160k
@@ -85,6 +93,10 @@ highlight:
   # gap 0.7 时回合数误差 2.4 个但忙碌占比误差 15.4 个百分点。
   # 所以时长用 0.3、回合分组用 0.7，各取所长。
   busy_gap_s: 0.3
+  # 完整版：每个候选前后各留多少秒。实测 0.5 时保留 35%、召回 0.927，
+  # 比 BetterPlay 的「保留 64%、召回 0.962」用一半时长覆盖差不多的球。
+  trim_pad_s: 0.5
+  trim_min_s: 0.6
   trim_bounce: true      # 在球落地弹跳处截断回合。不开的话回合会被弹跳声拖长，
                          # 把捡球画面剪进集锦
   bounce_min_count: 4    # 弹跳最少连续几次间隔递减

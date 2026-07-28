@@ -31,6 +31,7 @@ def cut(video_path: str, segments: List[Dict], out_dir: str, cfg: Dict,
         if f.startswith("seg_") and f.endswith(".mp4"):
             os.unlink(os.path.join(out_dir, f))
     fade = float(cfg.get("fade_out_s", 0.0))
+    sm = cfg.get("slowmo") or {}
     paths = []
     for i, s in enumerate(segments):
         dst = os.path.join(out_dir, "seg_%03d.mp4" % s["id"])
@@ -38,6 +39,28 @@ def cut(video_path: str, segments: List[Dict], out_dir: str, cfg: Dict,
                "-ss", str(s["start"]), "-i", video_path, "-t", str(s["duration"]),
                "-c:v", "libx264", "-preset", cfg["preset"], "-crf", str(cfg["crf"]),
                "-c:a", "aac", "-b:a", cfg["audio_bitrate"]]
+        # 慢动作：只放慢最后一拍前后的一小段，不动整个片段。
+        # 位置来自 last_hit（击球时间戳），不是片段中点 —— 猜不准就没有意义。
+        if sm.get("enabled") and s.get("last_hit"):
+            rel = s["last_hit"] - s["start"]
+            a = max(0.0, rel - float(sm.get("lead_s", 0.35)))
+            b = min(s["duration"], rel + float(sm.get("tail_s", 0.55)))
+            f = float(sm.get("factor", 0.6))
+            if b - a > 0.15:
+                vf = ("[0:v]trim=0:%.3f,setpts=PTS-STARTPTS[a];"
+                      "[0:v]trim=%.3f:%.3f,setpts=(PTS-STARTPTS)/%.4f%s[b];"
+                      "[0:v]trim=%.3f,setpts=PTS-STARTPTS[c];"
+                      "[a][b][c]concat=n=3:v=1[v]") % (
+                    a, a, b, f,
+                    ",minterpolate=fps=60:mi_mode=mci" if sm.get("smooth") else "",
+                    b)
+                af = ("[0:a]atrim=0:%.3f,asetpts=PTS-STARTPTS[x];"
+                      "[0:a]atrim=%.3f:%.3f,asetpts=PTS-STARTPTS,atempo=%.4f[y];"
+                      "[0:a]atrim=%.3f,asetpts=PTS-STARTPTS[z];"
+                      "[x][y][z]concat=n=3:v=0:a=1[aud]") % (a, a, b, f, b)
+                cmd = cmd[:cmd.index("-c:v")] + [
+                    "-filter_complex", vf + ";" + af, "-map", "[v]", "-map", "[aud]",
+                ] + cmd[cmd.index("-c:v"):]
         if fade_last and fade > 0 and i == len(segments) - 1:
             st = max(0.0, s["duration"] - fade)
             cmd += ["-vf", "fade=t=out:st=%.3f:d=%.3f" % (st, fade),
