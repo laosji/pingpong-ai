@@ -272,7 +272,8 @@ def main(argv=None) -> int:
             m_t, m_v = motion.motion_curve(path, cfg["motion"])
             rs = highlight.score(highlight.rallies(hits, hcfg, amps), m_t, m_v, hcfg)
             vk = highlight.video_kind(rs, meta["duration"], hcfg)
-            s_ = stats.summarize(rs, hits, amps, meta["duration"], vk)
+            s_ = stats.summarize(rs, hits, amps, meta["duration"], vk,
+                                 busy_gap=cfg["highlight"].get("busy_gap_s", 0.3))
             stats.report(s_)
             os.makedirs(args.out, exist_ok=True)
             dst = os.path.join(args.out, os.path.splitext(

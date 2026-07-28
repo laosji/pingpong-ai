@@ -99,7 +99,8 @@ def _run(job_id: str, req: Job) -> None:
         rs = highlight.score(highlight.rallies(hits, hcfg, amps), m_t, m_v, hcfg)
         meta = probe(req.video)
         vk = highlight.video_kind(rs, meta["duration"], hcfg)
-        summary = stats.summarize(rs, hits, amps, meta["duration"], vk)
+        summary = stats.summarize(rs, hits, amps, meta["duration"], vk,
+                                  busy_gap=hcfg.get("busy_gap_s", 0.3))
 
         kinds = req.themes
         if kinds == ["auto"]:

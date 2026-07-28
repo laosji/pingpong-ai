@@ -12,8 +12,30 @@ from typing import Dict, List
 import numpy as np
 
 
+def playing_time(hits: np.ndarray, gap: float) -> float:
+    """有效打球时长。**用比回合分组更小的 gap** —— 两个目标互相冲突：
+
+    真实回合只有 0.5 秒左右，只要有一个误报落在最后一拍后 gap 秒内，
+    回合长度就翻倍。实测（对着 5 个穷尽标注窗口）：
+        gap 0.3 -> 忙碌占比误差 5.1 个百分点，回合数误差 7.6 个
+        gap 0.5 -> 13.1 个百分点，2.4 个
+        gap 0.7 -> 15.4 个百分点，2.4 个
+    没有一个值能同时做准 —— 小 gap 时长准但回合被切碎，大 gap 反之。
+    所以时长用 0.3、回合分组用 0.7，各取所长。
+    """
+    if len(hits) < 2:
+        return 0.0
+    total, start, prev = 0.0, hits[0], hits[0]
+    for t in hits[1:]:
+        if t - prev > gap:
+            total += prev - start
+            start = t
+        prev = t
+    return float(total + prev - start)
+
+
 def summarize(rs: List[Dict], hits: np.ndarray, amps: np.ndarray,
-              duration: float, kind: Dict) -> Dict:
+              duration: float, kind: Dict, busy_gap: float = 0.3) -> Dict:
     if not rs:
         return {"duration": duration, "rally_count": 0}
 
@@ -21,7 +43,7 @@ def summarize(rs: List[Dict], hits: np.ndarray, amps: np.ndarray,
     dur = np.array([r["end"] - r["start"] for r in rs])
     peak = np.array([r.get("peak_power", 0.0) for r in rs])
     tail = np.array([r.get("tail_power", 0.0) for r in rs])
-    play_s = float(dur.sum())
+    play_s = playing_time(np.asarray(hits), busy_gap)
 
     i_long = int(np.argmax(n))
     i_pow = int(np.argmax(peak))
