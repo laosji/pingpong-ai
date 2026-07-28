@@ -29,7 +29,7 @@ UPLOADS = os.path.join(ROOT, "uploads")
 VIDEO_DIRS = [os.path.expanduser("~/Downloads/PP-video"), UPLOADS]
 ALLOWED_EXT = (".mp4", ".mov", ".m4v")
 
-app = FastAPI(title="乒乓球集锦")
+app = FastAPI(title="Pipo AI")
 _jobs: Dict[str, Dict] = {}
 _lock = threading.Lock()
 
