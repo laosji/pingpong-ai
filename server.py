@@ -15,7 +15,7 @@ import traceback
 import uuid
 from typing import Dict, List
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -28,6 +28,14 @@ OUT = os.path.join(ROOT, "out")
 UPLOADS = os.path.join(ROOT, "uploads")
 VIDEO_DIRS = [os.path.expanduser("~/Downloads/PP-video"), UPLOADS]
 ALLOWED_EXT = (".mp4", ".mov", ".m4v")
+
+# ── 两条最小防护 ────────────────────────────────────────────
+# 没有这两条，一次手滑（传个 10GB 文件）或者用久了（out/ 只增不减）
+# 就能把服务弄挂。规模再小也得有。
+MAX_UPLOAD_MB = int(os.environ.get("PIPO_MAX_UPLOAD_MB", "1024"))
+KEEP_DAYS = float(os.environ.get("PIPO_KEEP_DAYS", "7"))
+MAX_OUT_GB = float(os.environ.get("PIPO_MAX_OUT_GB", "10"))
+CLEAN_EVERY_S = 1800
 
 app = FastAPI(title="Pipo AI")
 _jobs: Dict[str, Dict] = {}
@@ -190,10 +198,18 @@ def job(jid: str):
 
 
 @app.post("/api/upload")
-async def upload(file: UploadFile = File(...)):
+async def upload(request: Request, file: UploadFile = File(...)):
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in ALLOWED_EXT:
         raise HTTPException(400, "只支持 %s" % "/".join(ALLOWED_EXT))
+    limit = MAX_UPLOAD_MB << 20
+    # Content-Length 先挡一道（快速拒绝，不用读完），
+    # 但它是客户端给的、可以撒谎，所以边写边数才是真正的防线。
+    try:
+        if int(request.headers.get("content-length") or 0) > limit * 1.05:
+            raise HTTPException(413, "文件超过 %d MB 上限" % MAX_UPLOAD_MB)
+    except ValueError:
+        pass
     # 只取文件名，丢掉任何路径成分 —— 上传的 filename 是客户端给的，不可信
     safe = os.path.basename(file.filename or "video" + ext).replace("/", "_")
     os.makedirs(UPLOADS, exist_ok=True)
@@ -202,8 +218,13 @@ async def upload(file: UploadFile = File(...)):
     while os.path.exists(dst):
         stem, e = os.path.splitext(safe)
         dst = os.path.join(UPLOADS, "%s_%d%s" % (stem, n, e)); n += 1
+    written = 0
     with open(dst, "wb") as fh:
         while chunk := await file.read(1 << 20):     # 分块写，避免整个视频进内存
+            written += len(chunk)
+            if written > limit:
+                fh.close(); os.unlink(dst)
+                raise HTTPException(413, "文件超过 %d MB 上限" % MAX_UPLOAD_MB)
             fh.write(chunk)
     try:
         m = probe(dst)
@@ -332,6 +353,83 @@ def source(path: str):
     return FileResponse(rp)
 
 
+def _sweep() -> Dict:
+    """清理 out/：先删过期的，还超容量就从最旧的继续删。
+
+    只动 out/ —— labels/ 是训练数据、models/ 是模型、cache/ 是嵌入缓存，
+    删了要重算或直接丢失，都不该被自动清理碰。
+    """
+    if not os.path.isdir(OUT):
+        return {"removed": 0, "freed_mb": 0}
+    now = time.time()
+    items = []
+    for name in os.listdir(OUT):
+        p = os.path.join(OUT, name)
+        try:
+            if os.path.isdir(p):
+                sz = sum(os.path.getsize(os.path.join(p, f))
+                         for f in os.listdir(p) if os.path.isfile(os.path.join(p, f)))
+                mt = os.path.getmtime(p)
+            else:
+                sz, mt = os.path.getsize(p), os.path.getmtime(p)
+        except OSError:
+            continue
+        items.append([p, sz, mt])
+
+    def rm(p):
+        try:
+            if os.path.isdir(p):
+                for f in os.listdir(p):
+                    os.unlink(os.path.join(p, f))
+                os.rmdir(p)
+            else:
+                os.unlink(p)
+            return True
+        except OSError:
+            return False
+
+    removed = freed = 0
+    keep = []
+    for p, sz, mt in items:
+        if now - mt > KEEP_DAYS * 86400 and rm(p):
+            removed += 1; freed += sz
+        else:
+            keep.append([p, sz, mt])
+
+    cap = int(MAX_OUT_GB * (1 << 30))
+    total = sum(x[1] for x in keep)
+    for p, sz, mt in sorted(keep, key=lambda x: x[2]):      # 最旧的先删
+        if total <= cap:
+            break
+        if rm(p):
+            removed += 1; freed += sz; total -= sz
+    return {"removed": removed, "freed_mb": round(freed / (1 << 20), 1),
+            "remaining_mb": round(total / (1 << 20), 1)}
+
+
+def _sweeper():
+    while True:
+        try:
+            r = _sweep()
+            if r["removed"]:
+                print("[cleanup] 删除 %d 项，释放 %.1f MB" % (r["removed"], r["freed_mb"]))
+        except Exception:
+            traceback.print_exc()
+        time.sleep(CLEAN_EVERY_S)
+
+
+@app.get("/api/storage")
+def storage():
+    total = 0
+    if os.path.isdir(OUT):
+        for root, _, fs in os.walk(OUT):
+            total += sum(os.path.getsize(os.path.join(root, f)) for f in fs
+                         if os.path.exists(os.path.join(root, f)))
+    return {"out_mb": round(total / (1 << 20), 1), "cap_gb": MAX_OUT_GB,
+            "keep_days": KEEP_DAYS, "max_upload_mb": MAX_UPLOAD_MB}
+
+
 os.makedirs(OUT, exist_ok=True)
+threading.Thread(target=_sweeper, daemon=True).start()
 app.mount("/out", StaticFiles(directory=OUT), name="out")
 app.mount("/", StaticFiles(directory=os.path.join(ROOT, "web"), html=True), name="web")
