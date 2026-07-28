@@ -94,6 +94,21 @@ def build_dataset(label_dir: str, cfg: Dict, cache_dir: str = "cache") -> Tuple:
     return np.vstack(X), np.concatenate(y), np.concatenate(groups)
 
 
+def _balance(groups: np.ndarray) -> np.ndarray:
+    """按视频均衡的样本权重：每个视频的总权重相同。
+
+    实测必要性：某个视频标得多（427 候选 vs 139/150）时会主导训练，
+    其它视频反而变差 —— dc393956 的 AUC 从 0.782 掉到 0.712、准确率 0.689->0.589。
+    加权后恢复到 0.741 / 0.678。「数据越多越好」只在均衡时成立。
+    """
+    w = np.ones(len(groups), float)
+    srcs = set(groups)
+    for s in srcs:
+        m = groups == s
+        w[m] = len(groups) / (len(srcs) * m.sum())
+    return w
+
+
 def train(label_dir: str, cfg: Dict, out_path: str = MODEL_PATH,
           cache_dir: str = "cache") -> Dict:
     from sklearn.linear_model import LogisticRegression
@@ -110,8 +125,8 @@ def train(label_dir: str, cfg: Dict, out_path: str = MODEL_PATH,
             tr, te = g != f, g == f
             if len(np.unique(y[tr])) < 2 or len(np.unique(y[te])) < 2:
                 continue
-            c = LogisticRegression(max_iter=5000, C=0.5,
-                                   class_weight="balanced").fit(X[tr], y[tr])
+            c = LogisticRegression(max_iter=5000, C=0.5, class_weight="balanced")\
+                .fit(X[tr], y[tr], sample_weight=_balance(g[tr]))
             p = c.predict_proba(X[te])[:, 1]
             k = int(len(p) * 0.6)
             idx = np.argsort(-p)[:k]
@@ -121,7 +136,8 @@ def train(label_dir: str, cfg: Dict, out_path: str = MODEL_PATH,
     else:
         print("\n只有一份标注，无法做跨视频验证 —— 再标一个视频才知道能不能泛化")
 
-    clf = LogisticRegression(max_iter=5000, C=0.5, class_weight="balanced").fit(X, y)
+    clf = LogisticRegression(max_iter=5000, C=0.5, class_weight="balanced")\
+        .fit(X, y, sample_weight=_balance(g))
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     with open(out_path, "wb") as fh:
         pickle.dump({"clf": clf, "n_train": len(y), "files": files}, fh)
