@@ -241,24 +241,33 @@ AUTO_THEMES = {"sparse": ["best", "longest", "kill"],
 # 应该告诉他「这段素材本来就几乎全在打球，删不掉多少」。
 THEMES = [
     {"id": "best",    "name": "训练集锦", "desc": "综合评分最高的若干回合，成片较长",
+     "name_en": "Training Reel", "desc_en": "The highest-scoring rallies; longer cut",
      "applicable": ["sparse"]},
     {"id": "longest", "name": "最长对拉", "desc": "来回拍数最多的相持",
+     "name_en": "Longest Rally", "desc_en": "The rally with the most exchanges",
      "applicable": []},
     {"id": "kill",    "name": "最帅击球", "desc": "一板打死对手的终结球（收尾力量/回合整体力量 最高）",
+     "name_en": "Best Shot", "desc_en": "The winner that ends the rally (tail power / rally power)",
      "applicable": []},
     {"id": "power",   "name": "最重扣杀", "desc": "单拍绝对力量最大的球",
+     "name_en": "Hardest Hit", "desc_en": "The single most powerful stroke",
      "applicable": ["dense"]},
     # 命名是产品决定。技术上它只能说明「这一板收尾比该回合平均软」，
     # 推不出是失误还是轻挡得分 —— 所以 desc 保持如实描述，不跟着名字一起夸大。
     {"id": "weak",    "name": "失误合集", "desc": "收尾力量明显低于回合平均的球，多为自身失误",
+     "name_en": "Misses", "desc_en": "Rallies ending well below their own average power",
      "applicable": []},
     # 和「训练集锦」的区别要写清楚，否则两个名字听起来都像「最好的部分」，
     # 用户不知道该选哪个：精彩瞬间是三项纪录各一段（很短），训练集锦是综合排名（较长）
     {"id": "trim",    "name": "完整版",
+     "name_en": "Full Cut",
      "desc": "只剪掉等待和捡球，一个球都不漏（约压到三分之一）",
+     "desc_en": "Removes only waiting and ball-fetching; keeps every rally (~1/3 the length)",
      "applicable": ["sparse"]},
     {"id": "records", "name": "精彩瞬间",
+     "name_en": "Top Moments",
      "desc": "全场三项纪录各一段：最长相持、最强击球、最帅收尾（通常 10-30 秒）",
+     "desc_en": "Three records, one clip each: longest rally, hardest hit, best finish (10-30s)",
      "applicable": []},
 ]
 

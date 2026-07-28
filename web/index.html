@@ -1,7 +1,7 @@
 <!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Pipo AI · 乒乓球集锦</title>
+<title>Pipo AI</title>
 <style>
 /* ── 设计系统 ─────────────────────────────────────────────
    间距 4/8/12/16/20/32，字号 11.5/12.5/13/15/17
@@ -42,6 +42,10 @@ button,input,label{font-family:inherit}
 .brand{font-size:15px;font-weight:640;letter-spacing:-.01em}
 .tag{font-size:12.5px;color:var(--ink-3);padding-left:12px;
   border-left:1px solid var(--line)}
+.lang{margin-left:auto;border:1px solid var(--line-2);background:transparent;
+  color:var(--ink-3);border-radius:999px;padding:4px 12px;font-size:12px;
+  cursor:pointer;transition:all .12s ease;font-variant:tabular-nums}
+.lang:hover{border-color:var(--accent);color:var(--accent)}
 
 .shell{display:grid;grid-template-columns:280px minmax(0,1fr);height:calc(100% - 60px)}
 .side{border-right:1px solid var(--line);background:var(--surface);
@@ -170,13 +174,14 @@ video{max-width:100%;display:block}
 <div class="top">
   <div class="logo">P</div>
   <div class="brand">Pipo AI</div>
-  <div class="tag">Your table tennis highlights, automatically</div>
+  <div class="tag" id="tagline">Your table tennis highlights, automatically</div>
+  <button class="lang" id="lang" title="中文 / English">EN</button>
 </div>
 
 <div class="shell">
   <div class="side" id="side">
     <div class="side-hd">
-      <span class="eyebrow">录像</span>
+      <span class="eyebrow" id="lbl-videos">录像</span>
       <label class="up" id="up">
         <input type="file" id="file" accept="video/mp4,video/quicktime,.mp4,.mov,.m4v" hidden>
         <span id="uptxt">选择文件</span>
@@ -189,6 +194,50 @@ video{max-width:100%;display:block}
 </div>
 
 <script>
+const I18N = {
+  zh:{ tagline:'训练录像，自动出片', videos:'录像', pick:'选择文件', uploading:'上传中',
+       upfail:'上传失败', nobackend:'后端没连上',
+       novideo:'还没有录像。点右上角「选择文件」，或把视频拖进来。',
+       blank:'选一段录像开始', blankSub:'也可以把视频文件拖到左侧',
+       duration:'时长', resolution:'分辨率', quality:'质量评分',
+       theme:'剪辑主题', go:'开始剪辑', submitting:'提交中', failed:'剪辑失败',
+       auto:'自动', autoDesc:'先判断这段录像是「捡球多」还是「连续打」，再决定剪哪个主题',
+       analysis:'录像分析', structure:'结构', rallies:'回合',
+       playtime:'有效打球', ratio:'占比', sparse:'捡球多', dense:'连续打',
+       accuracy:'回合数与时长有 10–20% 误差；击球总数偏高，暂不展示。',
+       download:'下载', del:'删除片段', done:'完成',
+       segsHint:n=>`${n} 个片段 · 点时间跳转，↓ 单独下载`,
+       delHint:'点 ✕ 删除这一段 —— 成片会立刻重拼，同时作为负例回流训练',
+       empty:'这段录像里没有符合条件的片段。',
+       fbNone:'看到不对的片段就删掉 —— 这些反馈会直接变成训练数据，用得越多越准。',
+       fbSome:(n,s,v)=>`已收到 <b>${n}</b> 处反馈，共 <b>${s}</b> 秒，来自 ${v} 个视频。这些会作为负例并入下次训练。`,
+       segTitle:'下载这一段', delTitle:'删除这一段' },
+  en:{ tagline:'Your table tennis highlights, automatically', videos:'Videos',
+       pick:'Choose file', uploading:'Uploading', upfail:'Upload failed',
+       nobackend:'Backend not reachable',
+       novideo:'No videos yet. Click "Choose file", or drop one here.',
+       blank:'Pick a video to start', blankSub:'or drop a file on the left',
+       duration:'Length', resolution:'Resolution', quality:'Quality',
+       theme:'Edit style', go:'Create', submitting:'Submitting', failed:'Failed',
+       auto:'Auto', autoDesc:'Detects whether the video is mostly play or mostly waiting, then picks a style',
+       analysis:'Analysis', structure:'Structure', rallies:'Rallies',
+       playtime:'Play time', ratio:'Share', sparse:'Lots of waiting', dense:'Mostly playing',
+       accuracy:'Rally count and play time carry 10–20% error; total strokes runs high and is not shown.',
+       download:'Download', del:'Remove clips', done:'Done',
+       segsHint:n=>`${n} clips · click a time to jump, ↓ to download`,
+       delHint:'Click ✕ to remove a clip — the reel is rebuilt at once and the clip trains the model',
+       empty:'No clips matched in this video.',
+       fbNone:'Remove clips that look wrong — that feedback becomes training data.',
+       fbSome:(n,s,v)=>`<b>${n}</b> corrections so far, <b>${s}</b> seconds across ${v} videos. They join the next training run.`,
+       segTitle:'Download this clip', delTitle:'Remove this clip' }
+};
+let LANG = localStorage.getItem('pipo_lang')
+  || (navigator.language||'').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+LANG = localStorage.getItem('pipo_lang') || LANG;
+const t = (k,...a) => { const v = I18N[LANG][k]; return typeof v==='function'?v(...a):v; };
+const themeName = x => LANG==='en' ? (x.name_en||x.name) : x.name;
+const themeDesc = x => LANG==='en' ? (x.desc_en||x.desc) : x.desc;
+
 const $ = s => document.querySelector(s);
 const el = (t,c,h) => { const e=document.createElement(t);
   if(c) e.className=c; if(h!=null) e.innerHTML=h; return e; };
@@ -201,13 +250,13 @@ let videos=[], themes=[], cur=null, pickTheme='auto', poll=null;
 
 async function boot(){
   $('#list').innerHTML = '<div class="sk" style="height:50px;margin:2px 0"></div>'.repeat(4);
-  blank('▤','选一段录像开始','也可以把视频文件拖到左侧');
+  blank('▤',t('blank'),t('blankSub'));
   try{
     [videos, themes] = await Promise.all([
       fetch('/api/videos').then(r=>r.json()),
       fetch('/api/themes').then(r=>r.json())]);
   }catch(e){
-    $('#list').innerHTML='<div class="note" style="padding:0 12px">后端没连上</div>'; return;
+    $('#list').innerHTML=`<div class="note" style="padding:0 12px">${t('nobackend')}</div>`; return;
   }
   drawList();
 }
@@ -215,7 +264,7 @@ async function boot(){
 function drawList(){
   const L=$('#list'); L.innerHTML='';
   if(!videos.length){
-    L.appendChild(el('div','note','还没有录像。点右上角「选择文件」，或把视频拖进来。')); return;
+    L.appendChild(el('div','note',t('novideo'))); return;
   }
   videos.forEach((v,i)=>{
     const b = el('button','item',
@@ -256,46 +305,46 @@ function draw(){
     <div class="card">
       ${player('/source?path='+encodeURIComponent(v.path), portrait)}
       <div class="metrics">
-        <div class="metric"><b>${mmss(v.duration)}</b><span>时长</span></div>
-        <div class="metric"><b>${v.width}×${v.height}</b><span>分辨率</span></div>
-        <div class="metric"><b>${v.quality}</b><span>质量评分</span></div>
+        <div class="metric"><b>${mmss(v.duration)}</b><span>${t('duration')}</span></div>
+        <div class="metric"><b>${v.width}×${v.height}</b><span>${t('resolution')}</span></div>
+        <div class="metric"><b>${v.quality}</b><span>${t('quality')}</span></div>
       </div>
       ${v.note && v.note!=='视频质量良好'
         ? `<div class="card-pad" style="padding-top:16px"><div class="alert">
-             <span>⚠</span><span>${esc(v.note)}</span></div></div>` : ''}
+             <span>⚠</span><span>${esc(LANG==='en'?(v.note_en||v.note):v.note)}</span></div></div>` : ''}
     </div>
     <div class="card">
-      <div class="card-hd"><h3>剪辑主题</h3></div>
+      <div class="card-hd"><h3>${t('theme')}</h3></div>
       <div class="card-pad">
         <div class="chips" id="chips" role="group" aria-label="剪辑主题"></div>
         <div class="desc" id="desc"></div>
-        <div style="margin-top:20px"><button class="btn" id="go">开始剪辑</button></div>
+        <div style="margin-top:20px"><button class="btn" id="go">${t('go')}</button></div>
       </div>
     </div>
     <div id="out"></div>`;
 
-  const all=[{id:'auto',name:'自动',
-    desc:'先判断这段录像是「捡球多」还是「连续打」，再决定剪哪个主题'}, ...themes];
+  const all=[{id:'auto',name:t('auto'),name_en:t('auto'),
+    desc:t('autoDesc'),desc_en:t('autoDesc')}, ...themes];
   const C=$('#chips');
-  all.forEach(t=>{
-    const b=el('button','chip'); b.textContent=t.name;
-    b.setAttribute('aria-pressed', pickTheme===t.id?'true':'false');
-    b.onclick=()=>{ pickTheme=t.id; draw(); };      // 单选
+  all.forEach(x=>{
+    const b=el('button','chip'); b.textContent=themeName(x);
+    b.setAttribute('aria-pressed', pickTheme===x.id?'true':'false');
+    b.onclick=()=>{ pickTheme=x.id; draw(); };      // 单选
     C.appendChild(b);
   });
-  $('#desc').textContent = (all.find(t=>t.id===pickTheme)||{}).desc || '';
+  $('#desc').textContent = themeDesc(all.find(x=>x.id===pickTheme)||{}) || '';
   $('#go').onclick = start;
 }
 
 async function start(){
   $('#go').disabled = true;
   $('#out').innerHTML = `<div class="card"><div class="card-pad"><div class="run">
-      <span class="spin"></span><span id="st">提交中</span></div></div></div>`;
+      <span class="spin"></span><span id="st">${t('submitting')}</span></div></div></div>`;
   let r;
   try{
     r = await fetch('/api/jobs',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({video:cur.path, themes:[pickTheme], top:10})}).then(x=>x.json());
-  }catch(e){ return fail('提交失败'); }
+  }catch(e){ return fail(t('failed')); }
   clearInterval(poll);
   poll = setInterval(async ()=>{
     let j; try{ j = await fetch('/api/jobs/'+r.id).then(x=>x.json()); }catch(e){ return; }
@@ -308,47 +357,47 @@ async function start(){
 function fail(msg){
   $('#go').disabled=false;
   $('#out').innerHTML = `<div class="card"><div class="card-pad">
-    <div class="alert"><span>⚠</span><span>剪辑失败：${esc(msg)}</span></div></div></div>`;
+    <div class="alert"><span>⚠</span><span>${t('failed')}: ${esc(msg)}</span></div></div></div>`;
 }
 
 function done(j){
   $('#go').disabled=false;
   const s=j.stats||{}, k=j.kind||{}, portrait=cur.height>cur.width;
   let h = `<div class="card">
-    <div class="card-hd"><h3>录像分析</h3></div>
+    <div class="card-hd"><h3>${t('analysis')}</h3></div>
     <div class="metrics" style="border-top:0">
-      <div class="metric"><b>${k.kind==='sparse'?'捡球多':'连续打'}</b><span>结构</span></div>
-      <div class="metric"><b>${s.rally_count ?? '—'}</b><span>回合</span></div>
-      <div class="metric"><b>${s.playing_seconds!=null?mmss(s.playing_seconds):'—'}</b><span>有效打球</span></div>
-      <div class="metric"><b>${s.playing_ratio!=null?Math.round(s.playing_ratio*100)+'%':'—'}</b><span>占比</span></div>
+      <div class="metric"><b>${k.kind==='sparse'?t('sparse'):t('dense')}</b><span>${t('structure')}</span></div>
+      <div class="metric"><b>${s.rally_count ?? '—'}</b><span>${t('rallies')}</span></div>
+      <div class="metric"><b>${s.playing_seconds!=null?mmss(s.playing_seconds):'—'}</b><span>${t('playtime')}</span></div>
+      <div class="metric"><b>${s.playing_ratio!=null?Math.round(s.playing_ratio*100)+'%':'—'}</b><span>${t('ratio')}</span></div>
     </div>
     <div class="card-pad" style="padding-top:14px">
-      <div class="note">回合数与时长有 10–20% 误差；击球总数偏高，暂不展示。</div>
+      <div class="note">${t('accuracy')}</div>
     </div></div>`;
 
   (j.results||[]).forEach((r,idx)=>{
     if(r.empty){
       h += `<div class="card"><div class="card-pad"><div class="note">
-        这段录像里没有符合条件的片段。</div></div></div>`;
+        ${t('empty')}</div></div></div>`;
       return;
     }
     h += `<div class="card">
       <div class="card-hd">
-        <h3>${esc(r.name)} · ${r.clips} 段 / ${r.seconds} 秒</h3>
+        <h3>${esc(themeName(r))} · ${r.clips} / ${r.seconds}s</h3>
         <span style="display:flex;gap:8px;align-items:center">
-          <button class="mark" data-mark="${idx}" aria-pressed="false">标记问题</button>
-          <a class="btn ghost" href="${r.url}" download>下载</a>
+          <button class="mark" data-mark="${idx}" aria-pressed="false">${t('del')}</button>
+          <a class="btn ghost" href="${r.url}" download>${t('download')}</a>
         </span>
       </div>
       ${player(r.url, portrait)}
-      <div class="segs" data-idx="${idx}">
-        <div class="segs-hd">${r.clips} 个片段 · 点时间跳转，↓ 单独下载</div>
+      <div class="segs" data-idx="${idx}" data-theme="${esc(r.theme)}">
+        <div class="segs-hd">${t('segsHint',r.clips)}</div>
         ${r.segments.map((x,i)=>
-        `<span class="seg" data-i="${i}">
+        `<span class="seg" data-i="${i}" data-sid="${x.id}">
            <button data-off="${x.offset}" data-idx="${idx}">${mmss(x.start)}–${mmss(x.end)}</button>
-           <a href="${x.url}" download title="下载这一段">↓</a>
+           <a href="${x.url}" download title="${t('segTitle')}">↓</a>
            <a class="rej" href="#" data-s="${x.start}" data-e="${x.end}"
-              title="这段不对 —— 会作为负例回流训练">✕</a>
+              title="${t('delTitle')}">✕</a>
          </span>`).join('')}
       </div>
     </div>`;
@@ -368,10 +417,10 @@ function done(j){
     const on = segs.dataset.edit === '1';
     segs.dataset.edit = on ? '' : '1';
     m.setAttribute('aria-pressed', on ? 'false' : 'true');
-    m.textContent = on ? '标记问题' : '完成';
+    m.textContent = on ? t('del') : t('done');
     segs.querySelector('.segs-hd').textContent = on
-      ? `${segs.querySelectorAll('.seg').length} 个片段 · 点时间跳转，↓ 单独下载`
-      : '点 ✕ 标记「这段不对」，会作为负例回流训练';
+      ? t('segsHint', segs.querySelectorAll('.seg').length)
+      : t('delHint');
   });
 
   $('#out').addEventListener('click', async e => {
@@ -379,16 +428,35 @@ function done(j){
     if(!a) return;
     e.preventDefault();
     const seg = a.closest('.seg');
+    const segs = seg.closest('.segs');
     if(seg.dataset.rejected === '1') return;
+    const alive = [...segs.querySelectorAll('.seg')]
+      .filter(x => x.dataset.rejected !== '1');
+    if(alive.length <= 1) return;                 // 至少留一段
     seg.dataset.rejected = '1';
+    const card = segs.closest('.card');
+    const hd = card.querySelector('.card-hd h3');
+    hd.dataset.busy = '1';
     try{
-      const r = await fetch('/api/feedback',{method:'POST',
+      // 删除 = 立刻从成片拿掉 + 记成负例，一个动作两件事
+      await fetch('/api/feedback',{method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({video:cur.path, start:+a.dataset.s, end:+a.dataset.e})
+        body:JSON.stringify({video:cur.path, start:+a.dataset.s, end:+a.dataset.e})});
+      const keep = [...segs.querySelectorAll('.seg')]
+        .filter(x => x.dataset.rejected !== '1').map(x => +x.dataset.sid);
+      const r = await fetch('/api/recut',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({video:cur.path, theme:segs.dataset.theme, keep})
       }).then(x=>x.json());
-      if(!r.ok) throw new Error();
+      if(r.url){
+        const v = card.querySelector('video');
+        v.src = r.url; v.load();
+        hd.textContent = hd.textContent.replace(/· .*$/, `· ${r.clips} 段 / ${r.seconds} 秒`);
+        seg.remove();
+      }
       loadFeedback();
     }catch(err){ seg.dataset.rejected=''; }
+    finally{ hd.dataset.busy=''; }
   });
 
   // 点片段 -> 主播放器跳到该片段在拼接成片里的位置
@@ -420,21 +488,20 @@ async function loadFeedback(){
   try{
     const d = await fetch('/api/feedback').then(r=>r.json());
     el.innerHTML = d.total_ranges
-      ? `已收到 <b>${d.total_ranges}</b> 处「这段不对」，共 <b>${d.total_seconds}</b> 秒，
-         来自 ${d.videos.length} 个视频。这些会作为负例并入下次训练。`
-      : '看到不对的片段就点 ✕ —— 这些反馈会直接变成训练数据，用得越多越准。';
+      ? t('fbSome', d.total_ranges, d.total_seconds, d.videos.length)
+      : t('fbNone');
   }catch(e){ el.textContent=''; }
 }
 
 function upload(f){
   if(!f) return;
   const lab=$('#up'), txt=$('#uptxt');
-  lab.dataset.busy='1'; txt.textContent='上传中';
+  lab.dataset.busy='1'; txt.textContent=t('uploading');
   $('#prog').innerHTML='<div class="prog"><i id="pb"></i></div>';
   const xhr=new XMLHttpRequest(); xhr.open('POST','/api/upload');
   xhr.upload.onprogress = e => { if(e.lengthComputable)
     $('#pb').style.width = (100*e.loaded/e.total)+'%'; };
-  const reset=()=>{ lab.dataset.busy=''; txt.textContent='选择文件'; $('#prog').innerHTML=''; };
+  const reset=()=>{ lab.dataset.busy=''; txt.textContent=t('pick'); $('#prog').innerHTML=''; };
   const err=m=>{ reset();
     $('#prog').innerHTML=`<div class="note" style="padding:0 16px 10px;color:var(--warn)">${esc(m)}</div>`; };
   xhr.onload = ()=>{
@@ -448,11 +515,11 @@ function upload(f){
         setTimeout(()=>$('#prog').innerHTML='', 2600);
       }else{ videos.push(v); drawList(); choose(videos.length-1); }
     }else{
-      let m='上传失败'; try{ m=JSON.parse(xhr.responseText).detail||m; }catch(e){}
+      let m=t('upfail'); try{ m=JSON.parse(xhr.responseText).detail||m; }catch(e){}
       err(m);
     }
   };
-  xhr.onerror = ()=>err('上传失败');
+  xhr.onerror = ()=>err(t('upfail'));
   const fd=new FormData(); fd.append('file',f); xhr.send(fd);
 }
 
@@ -464,5 +531,20 @@ const S=$('#side');
   e.preventDefault(); S.classList.remove('drop'); }));
 S.addEventListener('drop', e => upload(e.dataTransfer.files[0]));
 
-boot();
+function applyLang(){
+  document.documentElement.lang = LANG==='zh' ? 'zh-CN' : 'en';
+  $('#lang').textContent = LANG==='zh' ? 'EN' : '中';
+  $('#tagline').textContent = t('tagline');
+  $('#lbl-videos').textContent = t('videos');
+  $('#uptxt').textContent = t('pick');
+  drawList();
+  if(cur) draw(); else blank('▤', t('blank'), t('blankSub'));
+}
+$('#lang').onclick = ()=>{
+  LANG = LANG==='zh' ? 'en' : 'zh';
+  localStorage.setItem('pipo_lang', LANG);
+  applyLang();
+};
+
+boot().then(applyLang);
 </script>

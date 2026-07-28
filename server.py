@@ -34,6 +34,12 @@ _jobs: Dict[str, Dict] = {}
 _lock = threading.Lock()
 
 
+class Recut(BaseModel):
+    video: str
+    theme: str
+    keep: List[int]     # 保留的片段序号（1 起）
+
+
 class Feedback(BaseModel):
     video: str
     start: float
@@ -80,7 +86,7 @@ def _list_videos() -> List[Dict]:
             out.append({"path": p, "name": f, "duration": m["duration"],
                         "width": m["width"], "height": m["height"],
                         "quality": m["quality_score"], "note": m["recommendation"],
-                        "fp": fp})
+                        "note_en": m.get("recommendation_en", ""), "fp": fp})
     return out
 
 
@@ -214,7 +220,8 @@ async def upload(file: UploadFile = File(...)):
 
     return {"path": dst, "name": os.path.basename(dst), "duration": m["duration"],
             "width": m["width"], "height": m["height"],
-            "quality": m["quality_score"], "note": m["recommendation"], "fp": fp}
+            "quality": m["quality_score"], "note": m["recommendation"],
+            "note_en": m.get("recommendation_en", ""), "fp": fp}
 
 
 LABELS = os.path.join(ROOT, "labels")
@@ -245,6 +252,54 @@ def feedback(fb: Feedback):
     total = sum(b - a for a, b in lab["negative_ranges"])
     return {"ok": True, "ranges": len(lab["negative_ranges"]),
             "seconds": round(total, 1)}
+
+
+@app.post("/api/recut")
+def recut(r: Recut):
+    """用户删掉某些片段后重新拼接。
+
+    删除和反馈是同一个动作的两面：用户说「这段不该在这儿」，
+    既要立刻从成片里拿掉（他期待的），也要记成负例（我们要的）。
+    分成两个按钮会让用户困惑，也会漏掉大部分反馈。
+
+    片段已是独立文件，但仍走 render.cut 重切 —— 因为淡出是烘进最后一段的，
+    删掉末段后直接拼会丢掉淡出。重切 10 段只要两三秒。
+    """
+    if not os.path.exists(r.video):
+        raise HTTPException(404, "视频不存在")
+    jid = None
+    with _lock:
+        for k, j in _jobs.items():
+            if j.get("video") == r.video and j.get("state") == "done":
+                jid = k
+    if jid is None:
+        raise HTTPException(404, "没有可重剪的任务，请先生成")
+    with _lock:
+        res = next((x for x in _jobs[jid].get("results", [])
+                    if x.get("theme") == r.theme), None)
+    if not res or res.get("empty"):
+        raise HTTPException(404, "没有这个主题的结果")
+
+    keep = [s_ for s_ in res["segments"] if s_["id"] in set(r.keep)]
+    if not keep:
+        raise HTTPException(400, "至少保留一个片段")
+    cfg = config.load()
+    stem = os.path.splitext(os.path.basename(r.video))[0][:40]
+    seg_dir = "%s_hl_%s" % (stem, r.theme)
+    parts = render.cut(r.video, keep, os.path.join(OUT, seg_dir), cfg["render"])
+    final = render.concat(parts, os.path.join(OUT, "%s_%s.mp4" % (stem, r.theme)))
+    off = 0.0
+    for s_, part in zip(keep, parts):
+        s_["url"] = "/out/%s/%s" % (seg_dir, os.path.basename(part))
+        s_["offset"] = round(off, 2)
+        off += s_["duration"]
+    with _lock:
+        res["segments"] = keep
+        res["clips"] = len(keep)
+        res["seconds"] = round(off, 1)
+    # 加时间戳绕过浏览器缓存 —— 文件名没变，不加的话播放器还放旧的
+    return {"url": "/out/%s?v=%d" % (os.path.basename(final), int(time.time())),
+            "clips": len(keep), "seconds": round(off, 1), "segments": keep}
 
 
 @app.get("/api/feedback")

@@ -46,24 +46,32 @@ def probe(path: str) -> Dict:
     w, h = int(v["width"]), int(v["height"])
     duration = float(info.get("format", {}).get("duration", 0.0))
 
-    notes = []
+    notes, notes_en = [], []
     score = 100
     if min(w, h) < 720:
-        score -= 30; notes.append("分辨率低于 720p")
+        score -= 30
+        notes.append("分辨率低于 720p"); notes_en.append("Resolution below 720p")
     if fps < 25:
-        score -= 20; notes.append("帧率低于 25fps")
+        score -= 20
+        notes.append("帧率低于 25fps"); notes_en.append("Frame rate below 25fps")
     if a is None:
-        score -= 40; notes.append("无音轨 —— 击球声检测不可用，只能靠画面运动")
+        score -= 40
+        notes.append("无音轨 —— 击球声检测不可用，只能靠画面运动")
+        notes_en.append("No audio track; hit detection unavailable")
     if h > w:
-        score -= 15; notes.append("竖屏拍摄，方案假设为横屏固定机位")
+        score -= 15
+        notes.append("竖屏拍摄，方案假设为横屏固定机位")
+        notes_en.append("Portrait video; a fixed landscape camera works better")
     if duration < 120:
         notes.append("时长不足 2 分钟，像是已剪辑成片而非原始录像")
+        notes_en.append("Under 2 minutes; looks like an already-edited clip")
 
     return {
         "path": path, "width": w, "height": h, "fps": round(fps, 2),
         "duration": round(duration, 2), "has_audio": a is not None,
         "quality_score": max(0, score),
         "recommendation": "；".join(notes) or "视频质量良好",
+        "recommendation_en": "; ".join(notes_en) or "Looks good",
     }
 
 
