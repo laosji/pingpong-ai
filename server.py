@@ -170,7 +170,7 @@ def _run(jid: str, uid: str, video_path: str, req: Job) -> None:
 
         kinds = req.themes
         if kinds == ["auto"]:
-            kinds = highlight.AUTO_THEMES.get(vk["kind"], ["best"])[:1]
+            kinds = ["trim"]      # 自动 = 完整版：去掉捡球和等待，一个球都不漏
 
         odir = user_dir(OUT, uid)
         stem = os.path.splitext(os.path.basename(video_path))[0][:40]
@@ -228,7 +228,9 @@ def videos(u: Dict = Depends(current_user)):
 
 @app.get("/api/themes")
 def themes():
-    return highlight.THEMES
+    """不给前端返回 trim —— 它已经是「自动」的行为，再单列一个 chip 就是同一件事
+    出现两次。THEMES 里仍然保留 trim，出片结果要靠它取名称和说明。"""
+    return [t for t in highlight.THEMES if t["id"] != "trim"]
 
 
 @app.post("/api/upload")
@@ -625,8 +627,9 @@ MCP_TOOLS = [
                      "destructiveHint": False, "idempotentHint": False,
                      "openWorldHint": False},
      "description": ("生成集锦并返回下载链接，通常十几秒到一分钟。theme 可选："
-                     "auto 自动选题、best 训练集锦、longest 最长对拉、kill 最帅击球、"
-                     "power 最重扣杀、trim 完整版（只剪等待保留所有球）、records 精彩瞬间。"),
+                     "auto（默认，等于完整版：去掉捡球和等待、一个球都不漏）、"
+                     "best 训练集锦、longest 最长对拉、kill 最帅击球、"
+                     "power 最重扣杀、weak 失误合集、records 精彩瞬间。"),
      "inputSchema": {"type": "object",
                      "properties": {"video_id": {"type": "string"},
                                     "theme": {"type": "string", "default": "auto"},

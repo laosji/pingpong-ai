@@ -228,12 +228,10 @@ def video_kind(rs: List[Dict], duration: float, cfg: Dict) -> Dict:
     return {"kind": kind, "busy": round(busy, 3), "median_gap": round(mg, 2)}
 
 
-# 稀疏型：有大量废料可删，综合集锦最有价值
-# 密集型：删不掉多少，要靠「最突出的那几拍」拉开差距
-# kill 用比值、与回合长度无关，和 longest 重叠最少（实测前10名重叠 1-4/10，
-# 而 power 是 3-6/10 —— 回合越长越容易出现重击，power 与长度天然相关）
-AUTO_THEMES = {"sparse": ["best", "longest", "kill"],
-               "dense":  ["power", "longest", "kill"]}
+# 「自动」曾经按素材结构挑 2-3 个主题集锦（sparse -> best/longest/kill，
+# dense -> power/longest/kill）。改成直接等于 trim：用户要的默认结果是
+# 「把捡球和等待去掉、一个球都不漏」，而不是替他挑主题。
+# 集锦仍然可以单独选，只是不再是默认。
 
 # 给前端用的展示信息：名称、一句话说明、以及适合哪种素材。
 # applicable 为空表示通用；否则前端应在结构不匹配时给出提示而不是直接隐藏 ——

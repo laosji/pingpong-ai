@@ -111,9 +111,9 @@ TOOLS = [
                         "openWorldHint": False},
         "description": (
             "为一段录像生成集锦并返回下载链接。整个过程通常十几秒到一分钟。\n"
-            "theme 可选：auto（默认，自动判断素材类型选题）、best 训练集锦、"
-            "longest 最长对拉、kill 最帅击球、power 最重扣杀、"
-            "trim 完整版（只剪掉等待，保留所有球）、records 精彩瞬间。"),
+            "theme 可选：auto（默认，等于完整版：去掉捡球和等待、一个球都不漏，"
+            "约压到六成）、best 训练集锦、longest 最长对拉、kill 最帅击球、"
+            "power 最重扣杀、weak 失误合集、records 精彩瞬间。"),
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -228,8 +228,8 @@ def main(argv=None) -> int:
                      "稀疏，可大幅压缩" if vk["kind"] == "sparse" else "密集，删不掉多少",
                      vk["median_gap"], vk["busy"] * 100))
             if args.type == "auto":
-                kinds = highlight.AUTO_THEMES.get(vk["kind"], ["best"])
-                print("  自动选题: %s" % " / ".join(kinds))
+                kinds = ["trim"]      # 自动 = 完整版，与网页端/skill 保持一致
+                print("  自动 = 完整版：去掉捡球和等待，一个球都不漏")
             elif args.type == "all":
                 kinds = ["best", "longest", "kill", "weak", "power", "records"]
             else:
