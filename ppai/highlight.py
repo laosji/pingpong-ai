@@ -166,7 +166,8 @@ def score(rs: List[Dict], m_times: np.ndarray, m_vals: np.ndarray, cfg: Dict) ->
 #
 # 音频做不到的部分：**归属**。它只知道「这一下很响」，不知道是谁打的。
 # 做集锦不需要归属；做训练分析（方案第三阶段）必须有，那绕不开视觉。
-def trim_idle(hits: np.ndarray, duration: float, cfg: Dict) -> List[Dict]:
+def trim_idle(hits: np.ndarray, duration: float, cfg: Dict,
+              amps: Optional[np.ndarray] = None) -> List[Dict]:
     """完整版：只剪掉等待/捡球，保留所有打球内容。
 
     和集锦是**相反的取舍**：集锦押准确（挑出来的都好看，但只覆盖一小部分），
@@ -195,13 +196,20 @@ def trim_idle(hits: np.ndarray, duration: float, cfg: Dict) -> List[Dict]:
         else:
             merged.append([a, b])
     out = []
+    h = np.asarray(hits)
     for i, (a, b) in enumerate(merged, 1):
         if b - a < cfg.get("trim_min_s", 0.6):
             continue
+        # 这里原来把 hit_count / power 硬编成 0，于是「哪几段值得看」
+        # 在完整版上无从判断（标出来的是任意三段）。窗口里的击球本来就数得出来。
+        m = (h >= a) & (h <= b)
+        n = int(m.sum())
+        pk = float(np.max(amps[m])) if amps is not None and n else 0.0
         out.append({"id": len(out) + 1, "start": round(a, 2), "end": round(b, 2),
-                    "duration": round(b - a, 2), "hit_count": 0,
-                    "power": 0.0, "tail_power": 0.0, "last_hit": 0.0,
-                    "hit_rate": 0.0, "confidence": 1.0})
+                    "duration": round(b - a, 2), "hit_count": n,
+                    "power": round(pk, 2), "tail_power": 0.0,
+                    "last_hit": float(h[m][-1]) if n else 0.0,
+                    "hit_rate": round(n / max(b - a, 1e-6), 2), "confidence": 1.0})
     return out
 
 

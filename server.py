@@ -48,6 +48,9 @@ MAX_UPLOAD_MB = int(os.environ.get("PIPO_MAX_UPLOAD_MB", "1024"))
 KEEP_DAYS = float(os.environ.get("PIPO_KEEP_DAYS", "7"))
 MAX_OUT_GB = float(os.environ.get("PIPO_MAX_OUT_GB", "10"))
 CLEAN_EVERY_S = 1800
+# 分析在总耗时里的占比，用来把两个阶段拼成一条进度。实测得来，不是拍的。
+ANALYZE_SHARE = 0.55
+STAR_N = 3                 # 结果里标几段「回合最长」
 COOKIE = "pipo_sid"
 
 app = FastAPI(title="Pipo AI")
@@ -204,15 +207,34 @@ def _run(jid: str, uid: str, video_paths: List[str], req: Job) -> None:
         model = (rerank.load(rc.get("model", rerank.MODEL_PATH))
                  if rc.get("enabled") else None)
 
+        # 进度分两段：分析（按素材时长加权）占前 ANALYZE_SHARE，渲染占其余。
+        # 不硬编百分比 —— 这两个数都是能数出来的，数不出来的地方就不报。
+        total_src = sum(probe(p)["duration"] for p in video_paths) or 1.0
+        done_src = [0.0]
+
+        def pct(x):
+            # 任务跑完前 payload 里只有进度，收尾时会被结果整体覆盖，
+            # 所以这里直接整写就行
+            store.update_job(jid, payload={"percent": round(min(99.0, x), 1)})
+
         per, pool, gh, ga, base = [], [], [], [], 0.0
         for n, vp in enumerate(video_paths, 1):
             tag = "（%d/%d）" % (n, len(video_paths)) if multi else ""
+            # 一段素材内部也要推进度：整段只在结束时跳一次的话，
+            # 12 分钟的录像会有几十秒完全没有反馈 —— 正是要解决的问题。
+            def sub(frac, _base=done_src[0], _d=None):
+                d = _d if _d is not None else 0.0
+                pct(ANALYZE_SHARE * 100 * (_base + d * frac) / total_src)
+
+            dur_guess = probe(vp)["duration"]
             step("读取音轨" + tag)
             pcm = audio.extract_pcm(vp, cfg["audio"]["sr"])
             hits, env, _, fr = audio.detect_hits(pcm, cfg["audio"])
+            sub(0.40, _d=dur_guess)
             if model is not None and len(hits):
                 step("重排候选" + tag)
                 hits = rerank.apply(vp, hits, model, rc.get("keep_ratio", 0.6))
+            sub(0.60, _d=dur_guess)
             amps = audio.hit_amplitudes(hits, env, fr)
             step("分析画面运动" + tag)
             m_t, m_v = motion.motion_curve(vp, cfg["motion"])
@@ -220,13 +242,16 @@ def _run(jid: str, uid: str, video_paths: List[str], req: Job) -> None:
             for r in rs:
                 r["src"] = vp
             meta = probe(vp)
-            per.append({"path": vp, "hits": hits, "duration": meta["duration"]})
+            per.append({"path": vp, "hits": hits, "amps": amps,
+                        "duration": meta["duration"]})
             pool.extend(rs)
             # 统计口径要的是「整堂课」，所以把各段时间轴接成一条：
             # 不加偏移，第二段的时间戳会落回第一段里面。
             gh.append(np.asarray(hits) + base)
             ga.append(np.asarray(amps))
             base += meta["duration"]
+            done_src[0] += meta["duration"]
+            pct(ANALYZE_SHARE * 100 * done_src[0] / total_src)
 
         hits_all = np.concatenate(gh) if gh else np.zeros(0)
         amps_all = np.concatenate(ga) if ga else np.zeros(0)
@@ -260,7 +285,8 @@ def _run(jid: str, uid: str, video_paths: List[str], req: Job) -> None:
                 # 否则每个源都从 1 开始，seg_001.mp4 会互相覆盖。
                 picked = []
                 for p in per:
-                    for s_ in highlight.trim_idle(p["hits"], p["duration"], hcfg):
+                    for s_ in highlight.trim_idle(p["hits"], p["duration"], hcfg,
+                                                  amps=p["amps"]):
                         s_["src"] = p["path"]
                         s_["id"] = len(picked) + 1
                         picked.append(s_)
@@ -279,9 +305,24 @@ def _run(jid: str, uid: str, video_paths: List[str], req: Job) -> None:
             if not picked:
                 results.append({"theme": kind, "empty": True})
                 continue
+            # 一屏几十个时间码等于把数据倒给用户让他自己找。标出回合最长的几段 ——
+            # 用「拍数最多」这个能解释的事实，而不是编一个「精彩度」分数。
+            star = {id(x) for x in sorted(
+                picked, key=lambda r: (-r.get("hit_count", 0), -r.get("power", 0))
+            )[:STAR_N]}
+            for x in picked:
+                x["star"] = id(x) in star
             seg_dir = "%s_hl_%s" % (stem, kind)
+            ki = kinds.index(kind)
+            label = highlight.RANKERS.get(kind, kind).split(" ")[0]
+
+            def prog(i, n, _k=ki, _l=label):
+                step("剪辑：%s %d/%d" % (_l, i, n))
+                base_p = ANALYZE_SHARE + (1 - ANALYZE_SHARE) * _k / len(kinds)
+                pct((base_p + (1 - ANALYZE_SHARE) / len(kinds) * i / n) * 100)
+
             parts = render.cut(video_paths[0], picked, os.path.join(odir, seg_dir),
-                               cfg["render"], canvas=canvas)
+                               cfg["render"], canvas=canvas, on_progress=prog)
             final = render.concat(parts, os.path.join(odir, "%s_%s.mp4" % (stem, kind)))
             off = 0.0
             for s_, part in zip(picked, parts):

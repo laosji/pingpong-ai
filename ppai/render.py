@@ -61,7 +61,7 @@ def _fit(src_dims: tuple, canvas: tuple) -> str:
 
 
 def cut(video_path: str, segments: List[Dict], out_dir: str, cfg: Dict,
-        fade_last: bool = True, canvas: tuple = None) -> List[str]:
+        fade_last: bool = True, canvas: tuple = None, on_progress=None) -> List[str]:
     """切片。最后一段做淡出。
 
     为什么是淡出而不是调尾巴长度：结尾「仓促」的根源是**硬切** ——
@@ -129,6 +129,8 @@ def cut(video_path: str, segments: List[Dict], out_dir: str, cfg: Dict,
         cmd += ["-avoid_negative_ts", "make_zero", dst]
         _run(cmd)
         paths.append(dst)
+        if on_progress:
+            on_progress(i + 1, len(segments))
     return paths
 
 
