@@ -40,6 +40,8 @@ _HTML = r"""<!doctype html>
   <button onclick="tog()">播放/暂停 <kbd>空格</kbd></button>
   <button id="modebtn" onclick="toggleMode()">模式: 击球 <kbd>M</kbd> 切换</button>
   <button onclick="delSel()">删除选中 <kbd>Del</kbd></button>
+  <button onclick="addServe()">标发球 <kbd>S</kbd></button>
+  <button onclick="undoServe()">撤销发球 <kbd>Shift+S</kbd></button>
   <button onclick="setComplete()">标记为「已标完」</button>
   <button onclick="dl()">导出 JSON</button>
   <span id="stat"></span>
@@ -59,6 +61,7 @@ _HTML = r"""<!doctype html>
 const DUR=__DUR__, PPS=__PPS__, W=__W__, H=__H__, T0=__T0__, T1=__T1__;
 let lab=__LABEL__, pred=__PRED__, sel=-1, drag=null;
 if(!lab.pickup) lab.pickup=[];
+if(!lab.serves) lab.serves=[];
 // 两类标注分开存：捡球是负例，混进 playing 会让真值失效
 let mode='playing';   // 'playing' | 'pickup'
 const COLOR={playing:['rgba(80,220,140,.22)','rgba(80,220,140,.42)','#3ecf80','#7dffb0'],
@@ -88,6 +91,12 @@ function draw(){
   });
   cx.strokeStyle='rgba(255,180,60,.85)'; cx.lineWidth=1;
   lab.hits.forEach(t=>{cx.beginPath();cx.moveTo(t2x(t),H-22);cx.lineTo(t2x(t),H);cx.stroke();});
+  // 发球画整条竖线 + 顶部三角，和击球的短刻度明显区分 ——
+  // 它标的是「回合从这里开始」，看的是位置对不对，得贯穿整个时间轴
+  cx.strokeStyle='#5ac8ff'; cx.lineWidth=1.5; cx.fillStyle='#5ac8ff';
+  lab.serves.forEach(t=>{const x=t2x(t);
+    cx.beginPath();cx.moveTo(x,0);cx.lineTo(x,H);cx.stroke();
+    cx.beginPath();cx.moveTo(x-5,0);cx.lineTo(x+5,0);cx.lineTo(x,9);cx.closePath();cx.fill();});
   if(drag){ cx.fillStyle='rgba(80,220,140,.25)';
     cx.fillRect(t2x(Math.min(drag.a,drag.b)),10,d2x(Math.abs(drag.b-drag.a)),H-10); }
   const px=t2x(v.currentTime);
@@ -97,8 +106,9 @@ function draw(){
   const puWin=lab.pickup.filter(s=>s[1]>T0&&s[0]<T1).length;
   const puSec=lab.pickup.filter(s=>s[1]>T0&&s[0]<T1).reduce((a,s)=>a+s[1]-s[0],0);
   const mmss=x=>`${Math.floor(x/60)}:${String(Math.floor(x%60)).padStart(2,'0')}`;
+  const svWin=lab.serves.filter(t=>t>T0&&t<T1).length;
   document.getElementById('stat').textContent =
-    `${mmss(v.currentTime)} · 窗口 ${mmss(T0)}–${mmss(T1)} · 击球 ${inWin} 次 · 捡球 ${puWin} 段/${puSec.toFixed(0)}秒`;
+    `${mmss(v.currentTime)} · 窗口 ${mmss(T0)}–${mmss(T1)} · 发球 ${svWin} 次 · 击球 ${inWin} 次 · 捡球 ${puWin} 段/${puSec.toFixed(0)}秒`;
 }
 function tick(){draw();
   const px=t2x(v.currentTime);
@@ -131,10 +141,21 @@ function mark(){ if(mk===null){mk=v.currentTime;} else {
     lab.playing.push([Math.min(mk,v.currentTime),Math.max(mk,v.currentTime)]);mk=null;norm();} draw();}
 function tog(){v.paused?v.play():v.pause();}
 function delSel(){if(sel>=0){lab[mode].splice(sel,1);sel=-1;draw();}}
+// 发球只记时间点，不记区间 —— 回合起点是一个时刻，不是一段
+function addServe(){lab.serves.push(v.currentTime);
+  lab.serves.sort((a,b)=>a-b);draw();}
+function undoServe(){
+  // 撤掉离当前播放头最近的那个，而不是最后加的 ——
+  // 标错时人是回到出错的位置去改，不是回到时间顺序的末尾
+  if(!lab.serves.length) return;
+  let bi=0,bd=1e9;
+  lab.serves.forEach((t,i)=>{const d=Math.abs(t-v.currentTime); if(d<bd){bd=d;bi=i;}});
+  lab.serves.splice(bi,1);draw();}
 function setComplete(){lab.complete=!lab.complete;draw();}
 function dl(){norm();
   ['playing','pickup'].forEach(k=>lab[k]=lab[k].map(s=>[+s[0].toFixed(3),+s[1].toFixed(3)]));
   lab.hits=lab.hits.map(t=>+t.toFixed(3)).sort((a,b)=>a-b);
+  lab.serves=lab.serves.map(t=>+t.toFixed(3)).sort((a,b)=>a-b);
   const b=new Blob([JSON.stringify(lab,null,2)],{type:'application/json'});
   const a=document.createElement('a');
   a.href=URL.createObjectURL(b);a.download='__STEM__.json';a.click();}
@@ -163,6 +184,8 @@ document.onkeydown=e=>{
   else if(k==='o'&&mk!==null){lab[mode].push([Math.min(mk,v.currentTime),
       Math.max(mk,v.currentTime)]);mk=null;norm();draw();}
   else if(k==='f'){lab.hits.push(v.currentTime);draw();}
+  else if(k==='s'&&e.shiftKey){e.preventDefault();undoServe();}
+  else if(k==='s'){e.preventDefault();addServe();}
   else if(k==='m'){toggleMode();}
   else if(e.key==='Delete'||e.key==='Backspace'){e.preventDefault();delSel();}
   else if(e.key==='ArrowLeft'){e.preventDefault();v.currentTime=Math.max(T0,v.currentTime-(e.shiftKey?5:0.2));}

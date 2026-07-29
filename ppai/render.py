@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 def _run(cmd: List[str]) -> None:
@@ -14,6 +14,45 @@ def _run(cmd: List[str]) -> None:
 
 
 _DIMS: Dict[str, tuple] = {}
+
+# 叠字用的字体。必须能显示中文 —— 英文字体会把汉字画成方框。
+# 按平台列候选，一个都找不到就**跳过叠字**而不是报错：
+# 部署环境（Docker）里往往没有系统中文字体，不该让整个出片失败。
+_FONT_CANDIDATES = (
+    "/System/Library/Fonts/Supplemental/Songti.ttc",       # macOS
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",   # Debian/Ubuntu
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",        # Alpine/Arch
+)
+_FONT: Optional[str] = None
+_FONT_LOOKED = False
+
+
+def caption_font() -> Optional[str]:
+    global _FONT, _FONT_LOOKED
+    if not _FONT_LOOKED:
+        _FONT_LOOKED = True
+        _FONT = next((p for p in _FONT_CANDIDATES if os.path.exists(p)), None)
+    return _FONT
+
+
+def _esc(text: str) -> str:
+    """drawtext 的文本要转义 —— 冒号和反斜杠是它的语法字符。"""
+    return (text.replace("\\", r"\\\\").replace(":", r"\\:")
+                .replace("'", "").replace("%", r"\\%"))
+
+
+def _caption(text: str, h: int) -> str:
+    """左下角的一行说明，带半透明底 —— 直接白字在浅色地板上会看不见。"""
+    fp = caption_font()
+    if not fp or not text:
+        return ""
+    size = max(14, int(h * 0.042))
+    pad = max(6, size // 3)
+    return ("drawtext=fontfile=%s:text='%s':fontsize=%d:fontcolor=white"
+            ":box=1:boxcolor=black@0.45:boxborderw=%d:x=%d:y=h-th-%d"
+            % (fp, _esc(text), size, pad, pad * 2, pad * 2))
 
 
 def dims(path: str) -> tuple:
@@ -87,6 +126,7 @@ def cut(video_path: str, segments: List[Dict], out_dir: str, cfg: Dict,
         dst = os.path.join(out_dir, "seg_%03d.mp4" % s["id"])
         src = s.get("src") or video_path
         fit = _fit(dims(src), canvas)
+        cap = _caption(s.get("label", ""), (canvas or dims(src))[1] or 720)
         cmd = ["ffmpeg", "-v", "error", "-y",
                "-ss", str(s["start"]), "-i", src, "-t", str(s["duration"]),
                "-c:v", "libx264", "-preset", cfg["preset"], "-crf", str(cfg["crf"]),
@@ -110,15 +150,17 @@ def cut(video_path: str, segments: List[Dict], out_dir: str, cfg: Dict,
                       "[0:a]atrim=%.3f:%.3f,asetpts=PTS-STARTPTS,atempo=%.4f[y];"
                       "[0:a]atrim=%.3f,asetpts=PTS-STARTPTS[z];"
                       "[x][y][z]concat=n=3:v=0:a=1[aud]") % (a, a, b, f, b)
-                if fit:      # 统一画布要接在慢动作链末尾，不能另开 -vf
+                extra = ",".join(x for x in (fit, cap) if x)
+                if extra:    # 要接在慢动作链末尾，不能另开 -vf
                     vf = vf.replace("concat=n=3:v=1[v]",
-                                    "concat=n=3:v=1," + fit + "[v]")
+                                    "concat=n=3:v=1," + extra + "[v]")
                 cmd = cmd[:cmd.index("-c:v")] + [
                     "-filter_complex", vf + ";" + af, "-map", "[v]", "-map", "[aud]",
                 ] + cmd[cmd.index("-c:v"):]
-                fit = ""     # 已并进 filter_complex，别再挂一次 -vf
+                fit = cap = ""   # 已并进 filter_complex，别再挂一次 -vf
         # -vf 只能出现一次，统一画布和淡出必须串成一条链
-        chain = [x for x in (fit,) if x]
+        # 顺序有讲究：先统一画布再叠字，否则字会跟着缩放一起被拉伸
+        chain = [x for x in (fit, cap) if x]
         last = fade_last and fade > 0 and i == len(segments) - 1
         if last:
             st = max(0.0, s["duration"] - fade)

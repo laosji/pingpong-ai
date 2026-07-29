@@ -376,6 +376,12 @@ def _run(jid: str, uid: str, video_paths: List[str], req: Job) -> None:
             )[:STAR_N]}
             for x in picked:
                 x["star"] = id(x) in star
+            # 烧进画面的一行说明。数字本来就算好了，只是一直没画出来。
+            # 可关 —— 分享出去的片子有人要干净画面。
+            if cfg["render"].get("caption", True):
+                for k, x in enumerate(picked, 1):
+                    n = x.get("hit_count", 0)
+                    x["label"] = ("第 %d 回合 · %d 拍" % (k, n)) if n else ("第 %d 回合" % k)
             seg_dir = "%s_hl_%s" % (stem, kind)
             ki = kinds.index(kind)
             label = highlight.RANKERS.get(kind, kind).split(" ")[0]
