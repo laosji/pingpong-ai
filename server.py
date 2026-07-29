@@ -48,8 +48,9 @@ MAX_UPLOAD_MB = int(os.environ.get("PIPO_MAX_UPLOAD_MB", "1024"))
 KEEP_DAYS = float(os.environ.get("PIPO_KEEP_DAYS", "7"))
 MAX_OUT_GB = float(os.environ.get("PIPO_MAX_OUT_GB", "10"))
 CLEAN_EVERY_S = 1800
-# 分析在总耗时里的占比，用来把两个阶段拼成一条进度。实测得来，不是拍的。
-ANALYZE_SHARE = 0.55
+# 分析在总耗时里的占比，用来把两个阶段拼成一条进度。
+# 实测：12 分钟素材分析 ~4s、渲染 ~20s；3.5 分钟素材 2s / 10s。都在 1:5 上下。
+ANALYZE_SHARE = 0.18
 STAR_N = 3                 # 结果里标几段「回合最长」
 COOKIE = "pipo_sid"
 
@@ -181,88 +182,165 @@ def _fingerprint(path: str) -> str:
 
 
 # ── 任务 ──────────────────────────────────────────────────
-def _run(jid: str, uid: str, video_paths: List[str], req: Job) -> None:
-    """多素材当作一次训练课的若干段：各自检测，回合合池后统一排序。
+_ANALYSIS: Dict[tuple, Dict] = {}
+_ANALYSIS_INFLIGHT: Dict[tuple, threading.Event] = {}
+_ANALYSIS_LOCK = threading.Lock()
+_ANALYSIS_MAX = 8
+
+
+def _analyze(video_paths: List[str], cfg: Dict, hcfg: Dict,
+             step=None, pct=None) -> Dict:
+    """检测 + 打分，出片前的全部重活。**结果按素材缓存**。
+
+    抽出来是为了让「选主题」不再是盲选：主题预估和真正出片跑的是同一份
+    分析，用户在挑主题时就已经把这步付过了，点「开始剪辑」只剩渲染。
 
     检测必须逐个视频做 —— 击球时间戳、运动曲线都是各自时间轴上的，
     拼起来算会在每个衔接处凭空造出一个巨大的空档。只有回合列表能合池，
     因为每个回合都带着自己的 src 和本地时间。
+
+    缓存键是素材路径的**有序**元组：顺序变了合池后的时间轴也变了。
+    视频本身不可变，所以不需要失效策略，只压容量。
     """
+    key = tuple(video_paths)
+    # 同一份素材的并发请求必须合并成一次计算。用户在素材间点来点去会连开
+    # 好几个预估，而 motion 要把整段视频解一遍 —— 并发跑同一份素材会互相
+    # 抢 CPU，每个都变慢，看起来就是「一直在估算」。第二个请求在这里等，
+    # 不自己算。
+    while True:
+        with _ANALYSIS_LOCK:
+            got = _ANALYSIS.get(key)
+            if got is not None:
+                return got
+            ev = _ANALYSIS_INFLIGHT.get(key)
+            if ev is None:
+                ev = threading.Event()
+                _ANALYSIS_INFLIGHT[key] = ev
+                break                      # 这一轮由本线程负责算
+        if not ev.wait(900):               # 等别人算完；超时就自己来
+            with _ANALYSIS_LOCK:
+                _ANALYSIS_INFLIGHT.pop(key, None)
+
+    step = step or (lambda m: None)
+    pct = pct or (lambda x: None)
+    try:
+        return _analyze_inner(video_paths, cfg, hcfg, step, pct, key, ev)
+    except BaseException:
+        with _ANALYSIS_LOCK:
+            _ANALYSIS_INFLIGHT.pop(key, None)
+        ev.set()
+        raise
+
+
+def _analyze_inner(video_paths, cfg, hcfg, step, pct, key, ev) -> Dict:
     import numpy as np
 
+    multi = len(video_paths) > 1
+    rc = cfg.get("rerank", {})
+    model = (rerank.load(rc.get("model", rerank.MODEL_PATH))
+             if rc.get("enabled") else None)
+    total_src = sum(probe(p)["duration"] for p in video_paths) or 1.0
+    done_src = [0.0]
+
+    per, pool, gh, ga, base = [], [], [], [], 0.0
+    for n, vp in enumerate(video_paths, 1):
+        tag = "（%d/%d）" % (n, len(video_paths)) if multi else ""
+
+        # 一段素材内部也要推进度：整段只在结束时跳一次的话，
+        # 12 分钟的录像会有几十秒完全没有反馈 —— 正是要解决的问题。
+        def sub(frac, _base=done_src[0], _d=0.0):
+            pct(ANALYZE_SHARE * 100 * (_base + _d * frac) / total_src)
+
+        dur_guess = probe(vp)["duration"]
+        step("读取音轨" + tag)
+        pcm = audio.extract_pcm(vp, cfg["audio"]["sr"])
+        hits, env, _, fr = audio.detect_hits(pcm, cfg["audio"])
+        sub(0.40, _d=dur_guess)
+        if model is not None and len(hits):
+            step("重排候选" + tag)
+            hits = rerank.apply(vp, hits, model, rc.get("keep_ratio", 0.6))
+        sub(0.60, _d=dur_guess)
+        amps = audio.hit_amplitudes(hits, env, fr)
+        step("分析画面运动" + tag)
+        m_t, m_v = motion.motion_curve(vp, cfg["motion"])
+        rs = highlight.score(highlight.rallies(hits, hcfg, amps), m_t, m_v, hcfg)
+        for r in rs:
+            r["src"] = vp
+        meta = probe(vp)
+        per.append({"path": vp, "hits": hits, "amps": amps,
+                    "duration": meta["duration"]})
+        pool.extend(rs)
+        # 统计口径要的是「整堂课」，所以把各段时间轴接成一条：
+        # 不加偏移，第二段的时间戳会落回第一段里面。
+        gh.append(np.asarray(hits) + base)
+        ga.append(np.asarray(amps))
+        base += meta["duration"]
+        done_src[0] += meta["duration"]
+        pct(ANALYZE_SHARE * 100 * done_src[0] / total_src)
+
+    hits_all = np.concatenate(gh) if gh else np.zeros(0)
+    amps_all = np.concatenate(ga) if ga else np.zeros(0)
+    vk = highlight.video_kind(pool, base, hcfg)
+    summary = stats.summarize(pool, hits_all, amps_all, base, vk,
+                              busy_gap=hcfg.get("busy_gap_s", 0.3))
+    summary["source_count"] = len(video_paths)
+    summary["sources"] = [os.path.basename(p) for p in video_paths]
+    res = {"per": per, "pool": pool, "summary": summary, "vk": vk, "total": base,
+           "canvas": render.pick_canvas(
+               video_paths, {p["path"]: p["duration"] for p in per})}
+    with _ANALYSIS_LOCK:
+        _ANALYSIS[key] = res
+        while len(_ANALYSIS) > _ANALYSIS_MAX:
+            _ANALYSIS.pop(next(iter(_ANALYSIS)))
+        _ANALYSIS_INFLIGHT.pop(key, None)
+    ev.set()
+    return res
+
+
+def _pick_for(kind: str, an: Dict, hcfg: Dict) -> List[Dict]:
+    """某个主题会剪出哪些片段。**不做任何渲染** —— 这正是预估能便宜的原因。"""
+    if kind == "trim":
+        out = []
+        for p in an["per"]:
+            for s_ in highlight.trim_idle(p["hits"], p["duration"], hcfg,
+                                          amps=p["amps"]):
+                s_["src"] = p["path"]
+                s_["id"] = len(out) + 1
+                out.append(s_)
+        return out
+    if kind == "spot":
+        return highlight.select(highlight.rank(an["pool"], kind, hcfg), hcfg,
+                                total_s=hcfg.get("spot_seconds", 45))
+    return highlight.select(highlight.rank(an["pool"], kind, hcfg), hcfg)
+
+
+def _order(video_paths: List[str], ordered: bool) -> List[str]:
+    if len(video_paths) > 1 and not ordered:
+        # 默认按拍摄时间接续，而不是按点选顺序 —— 多选时点击顺序是随意的，
+        # 而成片的时间线不该是随意的。网页端会自己排好并置 ordered=True，
+        # 这时服务端不能再排一次，否则用户的调整会被悄悄覆盖。
+        return sorted(video_paths, key=shot_time)
+    return video_paths
+
+
+def _run(jid: str, uid: str, video_paths: List[str], req: Job) -> None:
     def step(msg: str) -> None:
         store.update_job(jid, stage=msg)
     try:
         cfg = config.load()
         hcfg = dict(cfg["highlight"])
         hcfg["top_n"] = req.top
-        multi = len(video_paths) > 1
-        if multi and not req.ordered:
-            # 默认按拍摄时间接续，而不是按点选顺序 —— 多选时点击顺序是随意的，
-            # 而成片的时间线不该是随意的。
-            # 网页端会自己排好并置 ordered=True（用户可以手动调整），
-            # 这时服务端不能再排一次，否则用户的调整会被悄悄覆盖。
-            video_paths = sorted(video_paths, key=shot_time)
-        rc = cfg.get("rerank", {})
-        model = (rerank.load(rc.get("model", rerank.MODEL_PATH))
-                 if rc.get("enabled") else None)
-
-        # 进度分两段：分析（按素材时长加权）占前 ANALYZE_SHARE，渲染占其余。
-        # 不硬编百分比 —— 这两个数都是能数出来的，数不出来的地方就不报。
-        total_src = sum(probe(p)["duration"] for p in video_paths) or 1.0
-        done_src = [0.0]
+        video_paths = _order(video_paths, req.ordered)
 
         def pct(x):
-            # 任务跑完前 payload 里只有进度，收尾时会被结果整体覆盖，
-            # 所以这里直接整写就行
+            # 任务跑完前 payload 里只有进度，收尾时会被结果整体覆盖，直接整写
             store.update_job(jid, payload={"percent": round(min(99.0, x), 1)})
 
-        per, pool, gh, ga, base = [], [], [], [], 0.0
-        for n, vp in enumerate(video_paths, 1):
-            tag = "（%d/%d）" % (n, len(video_paths)) if multi else ""
-            # 一段素材内部也要推进度：整段只在结束时跳一次的话，
-            # 12 分钟的录像会有几十秒完全没有反馈 —— 正是要解决的问题。
-            def sub(frac, _base=done_src[0], _d=None):
-                d = _d if _d is not None else 0.0
-                pct(ANALYZE_SHARE * 100 * (_base + d * frac) / total_src)
-
-            dur_guess = probe(vp)["duration"]
-            step("读取音轨" + tag)
-            pcm = audio.extract_pcm(vp, cfg["audio"]["sr"])
-            hits, env, _, fr = audio.detect_hits(pcm, cfg["audio"])
-            sub(0.40, _d=dur_guess)
-            if model is not None and len(hits):
-                step("重排候选" + tag)
-                hits = rerank.apply(vp, hits, model, rc.get("keep_ratio", 0.6))
-            sub(0.60, _d=dur_guess)
-            amps = audio.hit_amplitudes(hits, env, fr)
-            step("分析画面运动" + tag)
-            m_t, m_v = motion.motion_curve(vp, cfg["motion"])
-            rs = highlight.score(highlight.rallies(hits, hcfg, amps), m_t, m_v, hcfg)
-            for r in rs:
-                r["src"] = vp
-            meta = probe(vp)
-            per.append({"path": vp, "hits": hits, "amps": amps,
-                        "duration": meta["duration"]})
-            pool.extend(rs)
-            # 统计口径要的是「整堂课」，所以把各段时间轴接成一条：
-            # 不加偏移，第二段的时间戳会落回第一段里面。
-            gh.append(np.asarray(hits) + base)
-            ga.append(np.asarray(amps))
-            base += meta["duration"]
-            done_src[0] += meta["duration"]
-            pct(ANALYZE_SHARE * 100 * done_src[0] / total_src)
-
-        hits_all = np.concatenate(gh) if gh else np.zeros(0)
-        amps_all = np.concatenate(ga) if ga else np.zeros(0)
-        total = base
-        vk = highlight.video_kind(pool, total, hcfg)
-        summary = stats.summarize(pool, hits_all, amps_all, total, vk,
-                                  busy_gap=hcfg.get("busy_gap_s", 0.3))
-        summary["source_count"] = len(video_paths)
-        # 把实际接续顺序报出来 —— 排序规则（容器时间 > mtime）用户看不见，
-        # 不给出结果就没法判断顺序对不对。
-        summary["sources"] = [os.path.basename(p) for p in video_paths]
+        # 用户挑主题时已经跑过分析了，这里直接命中缓存，只剩渲染
+        an = _analyze(video_paths, cfg, hcfg, step=step, pct=pct)
+        per, pool = an["per"], an["pool"]
+        summary, vk, canvas = an["summary"], an["vk"], an["canvas"]
+        pct(ANALYZE_SHARE * 100)
 
         kinds = req.themes
         if kinds == ["auto"]:
@@ -270,33 +348,17 @@ def _run(jid: str, uid: str, video_paths: List[str], req: Job) -> None:
             # 两者不是二选一，是同一份素材的两种粒度：精华当场看，完整版存档。
             kinds = ["trim", "spot"]
 
-        canvas = render.pick_canvas(
-            video_paths, {p["path"]: p["duration"] for p in per})
         odir = user_dir(OUT, uid)
         stem = os.path.splitext(os.path.basename(video_paths[0]))[0][:40]
-        if multi:
+        if len(video_paths) > 1:
             stem = "%s_+%d" % (stem[:32], len(video_paths) - 1)
         results, used = [], []
         real = [k for k in kinds if k not in ("trim", "spot")]
         for kind in kinds:
             step("剪辑：%s" % highlight.RANKERS.get(kind, kind).split(" ")[0])
-            if kind == "trim":
-                # 完整版按素材顺序逐个剪，保持时间线；id 全局重编，
-                # 否则每个源都从 1 开始，seg_001.mp4 会互相覆盖。
-                picked = []
-                for p in per:
-                    for s_ in highlight.trim_idle(p["hits"], p["duration"], hcfg,
-                                                  amps=p["amps"]):
-                        s_["src"] = p["path"]
-                        s_["id"] = len(picked) + 1
-                        picked.append(s_)
-            elif kind == "spot":
-                picked = highlight.select(highlight.rank(pool, kind, hcfg), hcfg,
-                                          total_s=hcfg.get("spot_seconds", 45))
-            else:
-                picked = highlight.select(highlight.rank(pool, kind, hcfg), hcfg)
-                if len(real) > 1:
-                    picked = highlight.dedupe(picked, used, hcfg)
+            picked = _pick_for(kind, an, hcfg)
+            if kind not in ("trim", "spot") and len(real) > 1:
+                picked = highlight.dedupe(picked, used, hcfg)
             # trim 和 spot 不参与去重：trim 覆盖了所有回合，拿它当「已用」
             # 会把精华整个去成空；而这两者本来就是同一批内容的不同粒度，
             # 去重要防的是「两个主题剪出同一段」，不是这种情况。
@@ -372,6 +434,56 @@ def videos(u: Dict = Depends(current_user)):
         d["shot_at"] = v["shot_at"]
         out.append(d)
     return out
+
+
+class Est(BaseModel):
+    video: str = ""
+    videos: List[str] = []
+    ordered: bool = False
+    top: int = 10          # 必须和 Job.top 一致，否则预估的段数和实际出片对不上
+
+    def ids(self) -> List[str]:
+        return self.videos or ([self.video] if self.video else [])
+
+
+@app.post("/api/estimate")
+def estimate(req: Est, u: Dict = Depends(current_user)):
+    """每个主题会剪出多少段、多长 —— 不渲染，只跑分析后做一次挑选。
+
+    这是为了让选主题不再是盲选：原来用户想比较两个主题得各等一分钟出片，
+    现在分析跑一次（结果缓存），七个主题的预估一起给出，
+    之后真正出片直接命中缓存、只剩渲染。
+    """
+    ids = req.ids()
+    if not ids:
+        raise HTTPException(400, "没有选择视频")
+    vs = [store.get_video(u["id"], i) for i in ids]
+    if any(v is None for v in vs):
+        raise HTTPException(404, "视频不存在")
+    paths = _order([v["path"] for v in vs], req.ordered)
+    for p in paths:
+        if not os.path.exists(p):
+            raise HTTPException(404, "素材文件已不在")
+    cfg = config.load()
+    hcfg = dict(cfg["highlight"])
+    hcfg["top_n"] = req.top
+    an = _analyze(paths, cfg, hcfg)
+    out = {}
+    for th in highlight.THEMES:
+        k = th["id"]
+        try:
+            picked = _pick_for(k, an, hcfg)
+        except Exception:
+            continue
+        out[k] = {"clips": len(picked),
+                  "seconds": round(sum(x["duration"] for x in picked), 1)}
+    # 「自动」= 完整版 + 精华，预估上也按这个口径给
+    if "trim" in out and "spot" in out:
+        out["auto"] = {"clips": out["trim"]["clips"] + out["spot"]["clips"],
+                       "seconds": round(out["trim"]["seconds"]
+                                        + out["spot"]["seconds"], 1),
+                       "parts": [out["spot"], out["trim"]]}
+    return {"themes": out, "stats": an["summary"]}
 
 
 @app.get("/api/themes")

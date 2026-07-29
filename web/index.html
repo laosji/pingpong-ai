@@ -130,6 +130,7 @@ video{max-width:100%;display:block}
 .chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);
   color:var(--on-accent);font-weight:560}
 .desc{color:var(--ink-2);font-size:13px;margin-top:14px;min-height:1.6em}
+.est{color:var(--ink-3)}
 
 /* 素材顺序：横向缩略图条，拖动改顺序。
    给了画面才谈得上「排序」—— 只有文件名的话用户是在猜。 */
@@ -218,9 +219,12 @@ video{max-width:100%;display:block}
 .segs-hd{font-size:11.5px;color:var(--ink-3);width:100%;margin-bottom:2px}
 /* 一屏几十个时间码等于把数据倒给用户。标出回合最长的几段当入口，
    用「拍数最多」这个能解释的事实，不编「精彩度」。 */
-.seg.star{border-color:var(--accent);background:var(--accent-wash)}
-.seg.star>button{color:var(--accent);font-weight:600}
-.seg.star>button::before{content:'★';margin-right:4px;font-size:10px}
+/* 标星只用 ★ 和字重，**不能**动边框和底色 —— 那两样已经被
+   .seg[data-on="1"]（当前播放到哪一段）占了。两个含义共用一套视觉，
+   用户会把「正在播」误读成「这段很长」。一段可以同时是两者。 */
+.seg.star>button{font-weight:640;color:var(--ink)}
+.seg.star>button::before{content:'★';margin-right:4px;font-size:10px;
+  color:var(--accent)}
 
 @media (max-width:880px){
   .shell{grid-template-columns:1fr;height:auto}
@@ -268,6 +272,9 @@ const I18N = {
        blank:'选一段录像开始', blankSub:'也可以把视频文件拖到左侧',
        multiHint:'点「多选素材」可挑多段一起剪', multiSel:'已选 %d 段素材 · 合计 %s',
        selMode:'多选素材', selDone:'完成 (%d)', multiOn:'点条目加选／取消，选好后点「完成」',
+       estWait:'正在估算这段素材能剪出什么…',
+       estOne:(n,d)=>`预计 ${n} 段 / ${d}`,
+       estPair:(a,b,c,d)=>`预计 精华 ${a} 段 / ${b}，完整版 ${c} 段 / ${d}`,
        starHint:'★ 是回合最长的几段',
        starTitle:n=>`这个回合有 ${n} 拍`,
        spotFrom:(n,d)=>`${n} 个回合，从 ${d} 的素材里挑出来的`,
@@ -276,7 +283,7 @@ const I18N = {
        orderManual:'已手动调整 · 可继续拖动',
        duration:'时长', resolution:'分辨率', quality:'质量评分',
        theme:'剪辑主题', go:'开始剪辑', submitting:'提交中', failed:'剪辑失败',
-       auto:'自动', autoDesc:'去掉捡球和等待，一个球都不漏（约压到六成）',
+       auto:'自动', autoDesc:'一条几十秒的精华当场看，外加一条去掉捡球和等待的完整版存档',
        analysis:'录像分析', structure:'结构', rallies:'回合',
        playtime:'有效打球', ratio:'占比', sparse:'捡球多', dense:'连续打',
        accuracy:'回合数与时长有 10–20% 误差；击球总数偏高，暂不展示。',
@@ -294,6 +301,9 @@ const I18N = {
        blank:'Pick a video to start', blankSub:'or drop a file on the left',
        multiHint:'Use “Multi-select” to combine several clips', multiSel:'%d clips selected · %s total',
        selMode:'Multi-select', selDone:'Done (%d)', multiOn:'Tap items to add or remove, then “Done”',
+       estWait:'Estimating what this footage yields…',
+       estOne:(n,d)=>`about ${n} clips / ${d}`,
+       estPair:(a,b,c,d)=>`about ${a} clips / ${b} highlights, ${c} clips / ${d} full`,
        starHint:'★ marks the longest rallies',
        starTitle:n=>`${n} shots in this rally`,
        spotFrom:(n,d)=>`${n} rallies, picked from ${d} of footage`,
@@ -302,7 +312,7 @@ const I18N = {
        orderManual:'Manually ordered · drag to adjust',
        duration:'Length', resolution:'Resolution', quality:'Quality',
        theme:'Edit style', go:'Create', submitting:'Submitting', failed:'Failed',
-       auto:'Auto', autoDesc:'Cuts out ball retrieval and waiting — every rally kept (about 60% of the original)',
+       auto:'Auto', autoDesc:'A short highlights reel to watch now, plus a full version with idle time removed',
        analysis:'Analysis', structure:'Structure', rallies:'Rallies',
        playtime:'Play time', ratio:'Share', sparse:'Lots of waiting', dense:'Mostly playing',
        accuracy:'Rally count and play time carry 10–20% error; total strokes runs high and is not shown.',
@@ -340,6 +350,9 @@ const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 
 let videos=[], themes=[], cur=null, sel=[], pickTheme='auto', poll=null;
 let multiMode=false;
+// 主题预估：选完素材就在后台跑一次分析，之后点任何主题都立刻知道
+// 「会剪出几段、多长」，不用每个盲跑一分钟。key 是当前素材组合。
+let estKey=null, est=null, estBusy=false;
 
 async function boot(){
   $('#list').innerHTML = '<div class="sk" style="height:50px;margin:2px 0"></div>'.repeat(4);
@@ -377,6 +390,42 @@ function drawList(){
     b.onclick = e => choose(i, multiMode||e.metaKey||e.ctrlKey||e.shiftKey);
     L.appendChild(b);
   });
+}
+
+function selKey(){ return picked().map(v=>v.id).join(','); }
+
+function paintDesc(){
+  const box=$('#desc'); if(!box) return;
+  const all=[{id:'auto'}, ...themes];
+  const base = pickTheme==='auto' ? t('autoDesc')
+             : (themeDesc(themes.find(x=>x.id===pickTheme)||{}) || '');
+  let tail='';
+  if(est && estKey===selKey()){
+    const e=est[pickTheme];
+    if(e && e.parts) tail = ' · ' + t('estPair',
+      e.parts[0].clips, mmss(e.parts[0].seconds),
+      e.parts[1].clips, mmss(e.parts[1].seconds));
+    else if(e) tail = ' · ' + t('estOne', e.clips, mmss(e.seconds));
+  } else if(estBusy){
+    tail = ' · ' + t('estWait');
+  }
+  box.innerHTML = esc(base) + (tail?`<span class="est">${esc(tail)}</span>`:'');
+}
+
+async function loadEst(){
+  const key = selKey();
+  if(!key || key===estKey) return;
+  estBusy = true; est = null; paintDesc();
+  try{
+    const r = await fetch('/api/estimate',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({videos:picked().map(v=>v.id), ordered:true, top:10})})
+      .then(x=>x.ok?x.json():null);
+    // 请求飞在路上时用户可能又改了选择，回来的就不是当前这组素材了
+    if(selKey()!==key) return;
+    est = r ? r.themes : null; estKey = key;
+  }catch(e){ est = null; }
+  finally{ estBusy = false; paintDesc(); }
 }
 
 // 素材顺序条：拖动改接续顺序。用 HTML5 drag 而不是自己算指针位移 ——
@@ -534,7 +583,11 @@ function draw(){
   all.forEach(x=>{
     const b=el('button','chip'); b.textContent=themeName(x);
     b.setAttribute('aria-pressed', pickTheme===x.id?'true':'false');
-    b.onclick=()=>{ pickTheme=x.id; draw(); };      // 单选
+    b.onclick=()=>{ pickTheme=x.id;
+      // 只重画说明，不整页重绘 —— 重绘会把预估状态和已出的成片一起清掉
+      $('#chips').querySelectorAll('.chip').forEach((e,j)=>
+        e.setAttribute('aria-pressed', all[j].id===pickTheme?'true':'false'));
+      paintDesc(); };
     C.appendChild(b);
   });
   // 用 ResizeObserver 而不是 window resize 监听：draw() 每次重建 #chips，
@@ -543,7 +596,8 @@ function draw(){
     C.scrollWidth - C.scrollLeft - C.clientWidth > 4);
   C.onscroll=fade; new ResizeObserver(fade).observe(C); fade();
   drawOrder();
-  $('#desc').textContent = themeDesc(all.find(x=>x.id===pickTheme)||{}) || '';
+  paintDesc();
+  loadEst();
   $('#go').onclick = start;
 }
 
@@ -728,6 +782,9 @@ function done(j){
     const wrap = v.closest('.card').querySelector('.segs');
     if(!wrap) return;
     const offs = [...wrap.querySelectorAll('.seg button')].map(b=>parseFloat(b.dataset.off));
+    // 成片结尾有 1.6 秒淡出，播完会停在纯黑的最后一帧（实测亮度 0x00），
+    // 看起来像加载失败。播完退回首帧。
+    v.onended = ()=>{ try{ v.currentTime = 0; }catch(e){} };
     v.ontimeupdate = ()=>{
       let k = 0;
       for(let i=0;i<offs.length;i++) if(v.currentTime >= offs[i]) k = i;
