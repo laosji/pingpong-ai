@@ -10,12 +10,11 @@
       PIPO_BASE_URL: "https://pipo.example.com"
       PIPO_TOKEN: "用户的魔法链接里那串 token"
 
-**关于「视频怎么进来」这个前提问题**
-本模块只接受**视频 URL**，因为 MCP 的工具参数是 JSON，传不了几百 MB 的
-本地文件。所以助手这条路能不能成为主入口，取决于该助手能否把用户在对话里
-上传的文件暴露成一个临时 URL。能，流程就通；不能，助手只适合做
-「查询已处理的视频」这类轻交互，上传仍得走网页。
-这一点在接任何一家平台之前都该先确认。
+**本地文件：这个版本能，远程连接器不能**
+stdio 版跑在**用户自己的机器上**，有文件系统权限，所以能直接读本地视频
+（pipo_add_local_video）。而 https://域名/mcp 那个远程版跑在服务器上，
+读不到用户的磁盘 —— 那边只能给上传链接让用户在浏览器传。
+同一件事在两种传输下答案不同，别混为一谈。
 """
 from __future__ import annotations
 
@@ -23,7 +22,10 @@ import json
 import os
 import sys
 import time
+import http.client
+import mimetypes
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Dict, Optional
 
@@ -58,6 +60,19 @@ TOOLS = [
             "让用户在浏览器里传。把返回的 url 和 instructions 原样告诉用户，"
             "并提示传完回来说一声，然后用 pipo_list_videos 取新视频。"),
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "pipo_add_local_video",
+        "description": (
+            "读取用户电脑里的视频文件并上传，返回 video_id。"
+            "这是本地场景的首选 —— 用户说「剪一下我桌面上的 xxx.mp4」时用这个。"
+            "路径支持 ~ 展开。只对本地运行的 MCP server 有效。"),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"path": {"type": "string",
+                                    "description": "视频文件的本地绝对路径"}},
+            "required": ["path"],
+        },
     },
     {
         "name": "pipo_list_videos",
@@ -120,6 +135,52 @@ def _highlight(video_id: str, theme: str = "auto", top: int = 10) -> Dict:
     raise RuntimeError("超时：任务超过 6 分钟仍未完成")
 
 
+def _upload_local(path: str) -> Dict:
+    """流式 multipart 上传本地文件。
+
+    不能把文件读进内存再发 —— 训练录像动辄几百 MB。
+    用 http.client 手工拼 multipart 并分块 send，内存占用与文件大小无关。
+    """
+    path = os.path.abspath(os.path.expanduser(path))
+    if not os.path.isfile(path):
+        raise RuntimeError("文件不存在: %s" % path)
+    if os.path.splitext(path)[1].lower() not in (".mp4", ".mov", ".m4v"):
+        raise RuntimeError("只支持 mp4/mov/m4v")
+
+    name = os.path.basename(path)
+    ctype = mimetypes.guess_type(name)[0] or "video/mp4"
+    boundary = "----pipo" + os.urandom(8).hex()
+    head = ("--%s\r\nContent-Disposition: form-data; name=\"file\"; "
+            "filename=\"%s\"\r\nContent-Type: %s\r\n\r\n"
+            % (boundary, name, ctype)).encode()
+    tail = ("\r\n--%s--\r\n" % boundary).encode()
+    size = os.path.getsize(path)
+
+    u = urllib.parse.urlparse(BASE)
+    Conn = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
+    conn = Conn(u.hostname, u.port, timeout=1800)
+    conn.putrequest("POST", "/api/upload")
+    conn.putheader("Content-Type", "multipart/form-data; boundary=" + boundary)
+    conn.putheader("Content-Length", str(len(head) + size + len(tail)))
+    conn.putheader("Cookie", "pipo_sid=%s" % TOKEN)
+    conn.endheaders()
+    conn.send(head)
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            conn.send(chunk)
+    conn.send(tail)
+    r = conn.getresponse()
+    body = r.read()
+    if r.status != 200:
+        detail = ""
+        try:
+            detail = json.loads(body).get("detail", "")
+        except Exception:
+            pass
+        raise RuntimeError("上传失败 %d: %s" % (r.status, detail or body[:120]))
+    return json.loads(body)
+
+
 def dispatch(name: str, args: Dict) -> Any:
     if name == "pipo_upload_link":
         # 助手传不了本地大文件，只能把入口递给用户 —— 这是这类集成的固有边界，
@@ -135,6 +196,8 @@ def dispatch(name: str, args: Dict) -> Any:
                 "on the left or click Choose file. mp4/mov, up to 1GB. "
                 "Tell me when it's uploaded and I'll take it from there."),
         }
+    if name == "pipo_add_local_video":
+        return _upload_local(args["path"])
     if name == "pipo_list_videos":
         return _call("GET", "/api/videos")
     if name == "pipo_add_video":

@@ -115,21 +115,35 @@ claude.ai 添加连接器 https://域名/mcp
 
 | 工具 | 作用 |
 |---|---|
-| `pipo_upload_link` | 返回已带登录的上传链接 + 操作提示 |
+| `pipo_upload_link` | 返回已带登录的上传链接（远程连接器用） |
+| `pipo_add_local_video` | 读本地文件上传（仅 stdio 版可用） |
 | `pipo_list_videos` | 列出已上传的录像 |
 | `pipo_add_video` | 按公开直链添加录像 |
 | `pipo_make_highlight` | 生成集锦，返回下载链接 |
 
-### 固有边界：助手接不了本地大文件
+### 本地文件：看 MCP server 跑在谁的机器上
 
-MCP 的工具参数是 JSON，传不了几百 MB 的视频。所以：
+| 客户端 | server 位置 | 本地文件 |
+|---|---|---|
+| Claude Desktop / Claude Code | **用户自己机器上**（stdio） | **能直接读** |
+| claude.ai / ChatGPT 网页 | 我们的服务器 | 读不到 |
 
-* **能做**：用户已有公开直链 → `pipo_add_video` 直接拉
-* **做不到**：把手机相册里的视频交给助手
-* **绕法**：`pipo_upload_link` 给一条已带登录的上传链接，
-  用户在浏览器传完回来说一声，助手再 `pipo_list_videos` 取到
+stdio 版是在用户机器上跑的进程，有文件系统权限，
+所以 `pipo_add_local_video` 能直接读磁盘上的视频、流式上传
+（不把文件读进内存，内存占用与文件大小无关）。
 
-这不是实现问题，是这类集成的固有边界。
+实测一次完整对话：
+
+```
+用户：帮我剪一下 ~/Downloads/训练.mp4 里最帅的球
+  1. pipo_add_local_video  -> 读本地文件，304 秒的录像
+  2. pipo_make_highlight   -> 最帅击球：5 段 / 20.2 秒
+  3. 返回下载链接 + 结构分析（53 个回合，有效打球 42.4 秒）
+```
+
+远程连接器读不到用户磁盘，只能用 `pipo_upload_link` 给一条已带登录的
+上传链接，用户在浏览器传完回来说一声，助手再 `pipo_list_videos` 取到。
+同一件事在两种传输下答案不同，别混为一谈。
 
 ### Claude Desktop / Code（本地 stdio）
 
