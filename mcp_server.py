@@ -54,6 +54,9 @@ def _call(method: str, path: str, body: Optional[Dict] = None) -> Any:
 TOOLS = [
     {
         "name": "pipo_upload_link",
+        "annotations": {"title": "Get upload link", "readOnlyHint": True,
+                        "destructiveHint": False, "idempotentHint": True,
+                        "openWorldHint": False},
         "description": (
             "当用户想剪一段**本地/手机里**的录像时调用这个。\n"
             "助手无法接收几百 MB 的视频文件，所以返回一个专属上传链接，"
@@ -63,6 +66,9 @@ TOOLS = [
     },
     {
         "name": "pipo_add_local_video",
+        "annotations": {"title": "Upload local video", "readOnlyHint": False,
+                        "destructiveHint": False, "idempotentHint": False,
+                        "openWorldHint": False},
         "description": (
             "读取用户电脑里的视频文件并上传，返回 video_id。"
             "这是本地场景的首选 —— 用户说「剪一下我桌面上的 xxx.mp4」时用这个。"
@@ -76,11 +82,17 @@ TOOLS = [
     },
     {
         "name": "pipo_list_videos",
+        "annotations": {"title": "List videos", "readOnlyHint": True,
+                        "destructiveHint": False, "idempotentHint": True,
+                        "openWorldHint": False},
         "description": "列出当前用户已上传的乒乓球训练录像。",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "pipo_add_video",
+        "annotations": {"title": "Add video by URL", "readOnlyHint": False,
+                        "destructiveHint": False, "idempotentHint": False,
+                        "openWorldHint": True},
         "description": ("按 URL 添加一段乒乓球录像。只接受可公开访问的 http/https "
                         "直链，不能传本地文件。返回 video_id。"),
         "inputSchema": {
@@ -94,6 +106,9 @@ TOOLS = [
     },
     {
         "name": "pipo_make_highlight",
+        "annotations": {"title": "Make highlight reel", "readOnlyHint": False,
+                        "destructiveHint": False, "idempotentHint": False,
+                        "openWorldHint": False},
         "description": (
             "为一段录像生成集锦并返回下载链接。整个过程通常十几秒到一分钟。\n"
             "theme 可选：auto（默认，自动判断素材类型选题）、best 训练集锦、"

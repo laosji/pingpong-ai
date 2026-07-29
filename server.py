@@ -598,20 +598,32 @@ async def oauth_token(request: Request):
 # Claude Desktop / Claude Code 这类本地场景，两个都要留。
 MCP_TOOLS = [
     {"name": "pipo_upload_link",
+     "annotations": {"title": "Get upload link", "readOnlyHint": True,
+                     "destructiveHint": False, "idempotentHint": True,
+                     "openWorldHint": False},
      "description": ("当用户想剪一段本地/手机里的录像时调用。助手无法接收几百 MB 的"
                      "视频文件，所以返回一个已带登录的上传链接。把 url 和 instructions "
                      "原样告诉用户，提示传完回来说一声，然后用 pipo_list_videos 取新视频。"),
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "pipo_list_videos",
+     "annotations": {"title": "List videos", "readOnlyHint": True,
+                     "destructiveHint": False, "idempotentHint": True,
+                     "openWorldHint": False},
      "description": "列出当前用户已上传的乒乓球训练录像，返回 id / 名称 / 时长。",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "pipo_add_video",
+     "annotations": {"title": "Add video by URL", "readOnlyHint": False,
+                     "destructiveHint": False, "idempotentHint": False,
+                     "openWorldHint": True},
      "description": "按公开 http/https 直链添加一段录像，返回 video_id。传不了本地文件。",
      "inputSchema": {"type": "object",
                      "properties": {"url": {"type": "string"},
                                     "name": {"type": "string"}},
                      "required": ["url"]}},
     {"name": "pipo_make_highlight",
+     "annotations": {"title": "Make highlight reel", "readOnlyHint": False,
+                     "destructiveHint": False, "idempotentHint": False,
+                     "openWorldHint": False},
      "description": ("生成集锦并返回下载链接，通常十几秒到一分钟。theme 可选："
                      "auto 自动选题、best 训练集锦、longest 最长对拉、kill 最帅击球、"
                      "power 最重扣杀、trim 完整版（只剪等待保留所有球）、records 精彩瞬间。"),
