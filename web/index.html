@@ -99,6 +99,10 @@ video{max-width:100%;display:block}
 /* 主题名排成一行，说明统一显示在下方 —— 说明写进按钮会让宽度参差、换行成好几排 */
 .chips{display:flex;gap:8px;overflow-x:auto;padding:2px 0 4px;scrollbar-width:none}
 .chips::-webkit-scrollbar{display:none}
+/* 主题条藏了滚动条，右侧不给提示就会被当成「渲染坏了」——
+   溢出时右缘渐隐，滚到底自动去掉。 */
+.chips.more{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 36px),transparent);
+  mask-image:linear-gradient(90deg,#000 calc(100% - 36px),transparent)}
 .chip{flex:0 0 auto;white-space:nowrap;border:1px solid var(--line-2);
   background:var(--surface);color:var(--ink-2);border-radius:999px;
   padding:7px 15px;font-size:13px;font-weight:500;cursor:pointer;
@@ -178,7 +182,7 @@ video{max-width:100%;display:block}
   <div class="tag" id="tagline">Your table tennis highlights, automatically</div>
   <span class="who" id="who"></span>
   <button class="lang" id="lang" title="中文 / English">EN</button>
-  <button class="lang" id="out" title="退出 / Sign out">⏻</button>
+  <button class="lang" id="signout" title="退出 / Sign out">⏻</button>
 </div>
 
 <div class="shell">
@@ -344,6 +348,11 @@ function draw(){
     b.onclick=()=>{ pickTheme=x.id; draw(); };      // 单选
     C.appendChild(b);
   });
+  // 用 ResizeObserver 而不是 window resize 监听：draw() 每次重建 #chips，
+  // 挂在 window 上的监听不会被回收，点几次主题就攒一堆。
+  const fade=()=>C.classList.toggle('more',
+    C.scrollWidth - C.scrollLeft - C.clientWidth > 4);
+  C.onscroll=fade; new ResizeObserver(fade).observe(C); fade();
   $('#desc').textContent = themeDesc(all.find(x=>x.id===pickTheme)||{}) || '';
   $('#go').onclick = start;
 }
@@ -561,7 +570,7 @@ $('#lang').onclick = ()=>{
 fetch('/api/me').then(r=>r.ok?r.json():null).then(m=>{
   if(m) $('#who').textContent = m.name;
 });
-$('#out').onclick = async ()=>{
+$('#signout').onclick = async ()=>{
   await fetch('/api/logout',{method:'POST'});
   location.href = '/login.html';
 };
