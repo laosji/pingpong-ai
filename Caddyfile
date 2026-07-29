@@ -1,0 +1,32 @@
+{$PIPO_DOMAIN} {
+	encode zstd gzip
+
+	# 上传大文件：默认限制远小于视频体积。这个值要和 app 的
+	# PIPO_MAX_UPLOAD_MB 保持一致，否则用户看到的是 Caddy 的 413 而非我们的提示。
+	request_body {
+		max_size 1100MB
+	}
+
+	reverse_proxy app:8020 {
+		# 一小时视频分析约 48 秒，加转码更久。默认超时会在任务跑完前掐断，
+		# 前端会看到连接中断而不是结果。
+		transport http {
+			read_timeout 600s
+			write_timeout 600s
+		}
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 20MB
+			roll_keep 5
+		}
+	}
+}

@@ -1,0 +1,15 @@
+.venv/
+.git/
+out/
+uploads/
+cache/
+models/
+labels/*.html
+labels/*.npz
+*.db
+*.db-wal
+*.db-shm
+__pycache__/
+*.pyc
+/tmp/
+experiments_rerank.py

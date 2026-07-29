@@ -1,0 +1,35 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      # 上传上限。改这里的同时**必须**改 Caddyfile 里的 max_size ——
+      # 两处不一致时，小的那个先拒绝，用户会看到反向代理的错误页而不是我们的提示。
+      PIPO_MAX_UPLOAD_MB: "1024"
+      PIPO_KEEP_DAYS: "2"          # 成片保留天数。原片同样按这个清
+      PIPO_MAX_OUT_GB: "20"
+      PIPO_BASE_URL: "https://${PIPO_DOMAIN:-localhost}"
+    volumes:
+      - pipo-data:/data            # 数据库/标注/模型/上传/成片/缓存全在这
+    expose:
+      - "8020"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PIPO_DOMAIN: "${PIPO_DOMAIN:-localhost}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data           # 证书，删了会重新申请，注意 Let's Encrypt 限频
+      - caddy-config:/config
+    depends_on:
+      - app
+
+volumes:
+  pipo-data:
+  caddy-data:
+  caddy-config:
