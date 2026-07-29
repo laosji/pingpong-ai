@@ -238,6 +238,9 @@ def video_kind(rs: List[Dict], duration: float, cfg: Dict) -> Dict:
 # 用户在多球训练视频上选「训练集锦」不会报错，只是压缩比低（约 2:1），
 # 应该告诉他「这段素材本来就几乎全在打球，删不掉多少」。
 THEMES = [
+    {"id": "spot",    "name": "精华", "desc": "综合评分最高的几个回合，几十秒看完",
+     "name_en": "Highlights", "desc_en": "The best rallies, under a minute",
+     "applicable": []},
     {"id": "best",    "name": "训练集锦", "desc": "综合评分最高的若干回合，成片较长",
      "name_en": "Training Reel", "desc_en": "The highest-scoring rallies; longer cut",
      "applicable": ["sparse"]},
@@ -276,6 +279,7 @@ RANKERS = {
     "weak":    "失误合集 —— 收尾力量/整体力量 最低",
     "power":   "最重扣杀 —— 按回合内单拍绝对力量排序",
     "trim":    "完整版 —— 只剪掉等待，押召回不押准确",
+    "spot":    "精华 —— 综合评分最高的若干回合，凑满目标时长",
     "records": "精彩瞬间 —— 全场三项纪录各一段",
 }
 

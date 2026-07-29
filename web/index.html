@@ -162,6 +162,9 @@ video{max-width:100%;display:block}
 .alert{display:flex;gap:8px;align-items:flex-start;background:var(--warn-wash);
   color:var(--warn);font-size:12.5px;padding:10px 14px;border-radius:var(--r-sm);
   line-height:1.5}
+/* 只影响观感的提示用中性色 —— 和「没音轨、根本剪不了」用同一个黄色警告，
+   等于告诉用户每段素材都有问题，久了就没人看了 */
+.alert.info{background:var(--surface-2);color:var(--ink-2)}
 .run{display:flex;align-items:center;gap:11px;font-size:13.5px;color:var(--ink-2)}
 .spin{width:15px;height:15px;border:2px solid var(--line-2);
   border-top-color:var(--accent);border-radius:50%;animation:sp .7s linear infinite}
@@ -174,6 +177,12 @@ video{max-width:100%;display:block}
   background-size:200% 100%;animation:sh 1.3s ease-in-out infinite;border-radius:var(--r-sm)}
 @keyframes sh{to{background-position:-200% 0}}
 
+/* 完整版默认折叠：它是存档用的，不是每次都要看的东西 */
+.card.fold .foldbody{display:none}
+.card.fold[data-open="1"] .foldbody{display:block}
+.card.fold .card-hd{border-bottom:0}
+.card.fold[data-open="1"] .card-hd{border-bottom:1px solid var(--line)}
+.caret{color:var(--ink-3);font-size:12px;width:14px;text-align:center}
 .segs{display:flex;flex-wrap:wrap;gap:6px;padding:14px 20px;
   border-top:1px solid var(--line);background:var(--surface-2)}
 .seg{display:inline-flex;align-items:stretch;border:1px solid var(--line);
@@ -250,6 +259,8 @@ const I18N = {
        blank:'选一段录像开始', blankSub:'也可以把视频文件拖到左侧',
        multiHint:'点「多选素材」可挑多段一起剪', multiSel:'已选 %d 段素材 · 合计 %s',
        selMode:'多选素材', selDone:'完成 (%d)', multiOn:'点条目加选／取消，选好后点「完成」',
+       spotFrom:(n,d)=>`${n} 个回合，从 ${d} 的素材里挑出来的`,
+       trimCut:d=>`剪掉了 ${d} 的捡球和等待`,
        order:'素材顺序', orderAuto:'按拍摄时间排列 · 可拖动调整',
        orderManual:'已手动调整 · 可继续拖动',
        duration:'时长', resolution:'分辨率', quality:'质量评分',
@@ -272,6 +283,8 @@ const I18N = {
        blank:'Pick a video to start', blankSub:'or drop a file on the left',
        multiHint:'Use “Multi-select” to combine several clips', multiSel:'%d clips selected · %s total',
        selMode:'Multi-select', selDone:'Done (%d)', multiOn:'Tap items to add or remove, then “Done”',
+       spotFrom:(n,d)=>`${n} rallies, picked from ${d} of footage`,
+       trimCut:d=>`${d} of idle time removed`,
        order:'Clip order', orderAuto:'By capture time · drag to reorder',
        orderManual:'Manually ordered · drag to adjust',
        duration:'Length', resolution:'Resolution', quality:'Quality',
@@ -338,11 +351,12 @@ function drawList(){
       `<img class="th" src="/api/thumb?id=${encodeURIComponent(v.id)}"
             alt="" loading="lazy" onerror="this.style.visibility='hidden'">
        <span class="meta">
-         <span class="t">${esc(v.name)}</span>
+         <span class="t">${esc(shotLabel(v))}</span>
          <span class="s">${mmss(v.duration)} · ${v.width}×${v.height}</span>
        </span>
        ${multiMode?'<span class="ck">✓</span>':''}`);
     b.setAttribute('role','option');
+    b.title = v.name;          // 文件名退到 tooltip，需要时还能查
     b.setAttribute('aria-selected', sel.includes(v.id) ? 'true':'false');
     // 多选模式下点击即切换；平时点击=只选这个，保持单选手感 ——
     // 反过来做会让「换一个视频」变成先取消再选的两步。
@@ -363,8 +377,9 @@ function drawOrder(){
       `<span class="n">${i+1}</span>
        <img src="/api/thumb?id=${encodeURIComponent(v.id)}" alt=""
             onerror="this.style.visibility='hidden'">
-       <span class="nm">${esc(v.name)}</span>`);
+       <span class="nm">${esc(shotLabel(v))}</span>`);
     d.draggable = true;
+    d.title = v.name;
     d.dataset.id = v.id;
     d.ondragstart = e => { e.dataTransfer.effectAllowed='move';
       e.dataTransfer.setData('text/plain', v.id); d.classList.add('drag'); };
@@ -411,6 +426,26 @@ function choose(i, add){
 // sel 是**有序**的 id 数组：成片的接续顺序就是它，所以不能用 Set。
 // 存 id 不存对象 —— 上传后 videos 会整个重建，存引用会让选中态凭空丢失。
 function picked(){ return sel.map(id=>videos.find(v=>v.id===id)).filter(Boolean); }
+
+// 素材的主标签用拍摄时间，不用文件名。
+// 文件名基本都是 dc393956ce8c… 这类哈希，用户分不出哪段是哪段；
+// 而「7月27日 15:53」立刻能对上是哪次训练。
+function shotLabel(v){
+  if(!v.shot_at) return v.name;
+  const d = new Date(v.shot_at*1000);
+  const hm = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+  return LANG==='en'
+    ? d.toLocaleDateString('en-US',{month:'short',day:'numeric'})+', '+hm
+    : (d.getMonth()+1)+'月'+d.getDate()+'日 '+hm;
+}
+// 「素材没问题」不该显示成警告条。老记录里存的是旧文案，一并认掉。
+const NOTE_OK = ['视频质量良好','素材没问题，可以直接剪','Looks good','Good to go',''];
+function noteOf(v){
+  const n = LANG==='en' ? (v.note_en||v.note) : v.note;
+  if(!n || NOTE_OK.includes(n) || NOTE_OK.includes(v.note)) return null;
+  // 没音轨是唯一真正挡路的问题 —— 其它都只影响观感，不该用同一个红色警告
+  return {text:n, blocking:/没有音轨|无音轨|No audio track/.test(n)};
+}
 // 默认按拍摄时间；用户拖动调整后不再自动重排（reordered 置位）。
 let reordered=false;
 function sortSel(){
@@ -455,9 +490,10 @@ function draw(){
         <div class="metric"><b>${v.width}×${v.height}</b><span>${t('resolution')}</span></div>
         <div class="metric"><b>${v.quality}</b><span>${t('quality')}</span></div>
       </div>
-      ${v.note && v.note!=='视频质量良好'
-        ? `<div class="card-pad" style="padding-top:16px"><div class="alert">
-             <span>⚠</span><span>${esc(LANG==='en'?(v.note_en||v.note):v.note)}</span></div></div>` : ''}
+      ${(n => n ? `<div class="card-pad" style="padding-top:16px">
+             <div class="alert${n.blocking?'':' info'}">
+               <span>${n.blocking?'⚠':'ⓘ'}</span><span>${esc(n.text)}</span>
+             </div></div>` : '')(noteOf(v))}
     </div>
     ${picked().length>1 ? `
     <div class="card">
@@ -538,20 +574,42 @@ function done(j){
       <div class="note">${t('accuracy')}</div>
     </div></div>`;
 
-  (j.results||[]).forEach((r,idx)=>{
+  // 「自动」会出两条：精华（当场看）和完整版（存档）。
+  // 平级并排会逼用户做一次没必要的选择，而且两个播放器堆在一起很重 ——
+  // 精华当主角放前面，完整版折叠成一行。
+  const all = j.results||[];
+  const pair = all.some(r=>r.theme==='spot') && all.some(r=>r.theme==='trim');
+  const ordered = pair
+    ? [...all.filter(r=>r.theme==='spot'), ...all.filter(r=>r.theme!=='spot')]
+    : all;
+  const trimSec = (all.find(r=>r.theme==='trim')||{}).seconds;
+
+  ordered.forEach((r)=>{
+    const idx = all.indexOf(r);
     if(r.empty){
       h += `<div class="card"><div class="card-pad"><div class="note">
         ${t('empty')}</div></div></div>`;
       return;
     }
-    h += `<div class="card">
-      <div class="card-hd">
-        <h3>${esc(LANG==='en'?(r.name_en||r.name):r.name)} · ${r.clips} / ${r.seconds}s</h3>
+    const fold = pair && r.theme==='trim';
+    // 写出两者的关系 —— 少了这句，用户会以为要在两个成片里二选一
+    const rel = pair && r.theme==='spot' && s.duration
+      ? `<div class="card-pad" style="padding:12px 20px 0"><div class="note">
+           ${t('spotFrom', r.clips, mmss(s.duration))}</div></div>` : '';
+    const sub = fold && s.duration!=null && trimSec!=null
+      ? ` · ${t('trimCut', mmss(Math.max(0, s.duration - trimSec)))}` : '';
+    h += `<div class="card${fold?' fold':''}"${fold?' data-open="0"':''}>
+      <div class="card-hd"${fold?' data-fold="1"':''}>
+        <h3>${esc(LANG==='en'?(r.name_en||r.name):r.name)} · ${
+          fold ? mmss(r.seconds)+sub : r.clips+' / '+r.seconds+'s'}</h3>
         <span style="display:flex;gap:8px;align-items:center">
-          <button class="mark" data-mark="${idx}" aria-pressed="false">${t('del')}</button>
+          ${fold?`<span class="caret">▸</span>`:
+            `<button class="mark" data-mark="${idx}" aria-pressed="false">${t('del')}</button>`}
           <a class="btn ghost" href="${r.url}" download>${t('download')}</a>
         </span>
       </div>
+      ${rel}
+      <div class="foldbody">
       ${player(r.url, portrait)}
       <div class="segs" data-idx="${idx}" data-theme="${esc(r.theme)}">
         <div class="segs-hd">${t('segsHint',r.clips)}</div>
@@ -563,11 +621,22 @@ function done(j){
               title="${t('delTitle')}">✕</a>
          </span>`).join('')}
       </div>
+      </div>
     </div>`;
   });
   h += `<div class="card"><div class="card-pad">
       <div class="fb" id="fb"></div></div></div>`;
   $('#out').innerHTML = h;
+  $('#out').querySelectorAll('[data-fold]').forEach(hd=>{
+    hd.style.cursor='pointer';
+    hd.onclick = e => {
+      if(e.target.closest('a')) return;      // 下载键不该顺带展开
+      const c = hd.closest('.card');
+      const open = c.dataset.open === '1';
+      c.dataset.open = open ? '0' : '1';
+      hd.querySelector('.caret').textContent = open ? '▸' : '▾';
+    };
+  });
   loadFeedback();
 
   // 「这段不对」：只声明这个区间没有有效击球，不要求用户精确到某一拍。

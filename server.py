@@ -135,6 +135,11 @@ class Feedback(BaseModel):
     verdict: str = "not_playing"
 
 
+# 旧版质量提示的特征串，用来认出需要重算的老记录
+_OLD_NOTES = ("视频质量良好", "分辨率低于 720p", "帧率低于 25fps",
+              "方案假设为横屏固定机位", "无音轨 ——", "时长不足 2 分钟")
+
+
 def shot_time(path: str) -> float:
     """拍摄时间，用于把多段素材按时间顺序接起来。
 
@@ -236,7 +241,9 @@ def _run(jid: str, uid: str, video_paths: List[str], req: Job) -> None:
 
         kinds = req.themes
         if kinds == ["auto"]:
-            kinds = ["trim"]      # 自动 = 完整版：去掉捡球和等待，一个球都不漏
+            # 完整版打底（一个球都不漏），再附一条几十秒的精华。
+            # 两者不是二选一，是同一份素材的两种粒度：精华当场看，完整版存档。
+            kinds = ["trim", "spot"]
 
         canvas = render.pick_canvas(
             video_paths, {p["path"]: p["duration"] for p in per})
@@ -245,6 +252,7 @@ def _run(jid: str, uid: str, video_paths: List[str], req: Job) -> None:
         if multi:
             stem = "%s_+%d" % (stem[:32], len(video_paths) - 1)
         results, used = [], []
+        real = [k for k in kinds if k not in ("trim", "spot")]
         for kind in kinds:
             step("剪辑：%s" % highlight.RANKERS.get(kind, kind).split(" ")[0])
             if kind == "trim":
@@ -256,11 +264,18 @@ def _run(jid: str, uid: str, video_paths: List[str], req: Job) -> None:
                         s_["src"] = p["path"]
                         s_["id"] = len(picked) + 1
                         picked.append(s_)
+            elif kind == "spot":
+                picked = highlight.select(highlight.rank(pool, kind, hcfg), hcfg,
+                                          total_s=hcfg.get("spot_seconds", 45))
             else:
                 picked = highlight.select(highlight.rank(pool, kind, hcfg), hcfg)
-                if len(kinds) > 1:
+                if len(real) > 1:
                     picked = highlight.dedupe(picked, used, hcfg)
-            used.extend(picked)
+            # trim 和 spot 不参与去重：trim 覆盖了所有回合，拿它当「已用」
+            # 会把精华整个去成空；而这两者本来就是同一批内容的不同粒度，
+            # 去重要防的是「两个主题剪出同一段」，不是这种情况。
+            if kind not in ("trim", "spot"):
+                used.extend(picked)
             if not picked:
                 results.append({"theme": kind, "empty": True})
                 continue
@@ -301,6 +316,15 @@ def videos(u: Dict = Depends(current_user)):
         if not v.get("shot_at"):
             v["shot_at"] = shot_time(v["path"])
             store.set_shot_at(v["id"], v["shot_at"])
+        # 质量提示是上传时算好存下来的，改了文案之后老记录还是旧话术。
+        # 重新 probe 一次并存回，只发生一次。不自己重算是为了避免
+        # 判断逻辑在两处各写一遍然后慢慢跑偏。
+        if any(k in (v.get("note") or "") for k in _OLD_NOTES):
+            m = probe(v["path"])
+            store.set_note(v["id"], m["recommendation"], m["recommendation_en"],
+                           m["quality_score"])
+            v["note"], v["note_en"] = m["recommendation"], m["recommendation_en"]
+            v["quality"] = m["quality_score"]
         d = {k: v[k] for k in
              ("id", "name", "duration", "width", "height", "quality",
               "note", "note_en")}
@@ -313,7 +337,7 @@ def videos(u: Dict = Depends(current_user)):
 def themes():
     """不给前端返回 trim —— 它已经是「自动」的行为，再单列一个 chip 就是同一件事
     出现两次。THEMES 里仍然保留 trim，出片结果要靠它取名称和说明。"""
-    return [t for t in highlight.THEMES if t["id"] != "trim"]
+    return [t for t in highlight.THEMES if t["id"] not in ("trim", "spot")]
 
 
 @app.post("/api/upload")

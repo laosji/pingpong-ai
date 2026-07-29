@@ -153,6 +153,13 @@ def set_shot_at(vid: str, ts: float) -> None:
     c.commit()
 
 
+def set_note(vid: str, note: str, note_en: str, quality: int) -> None:
+    c = conn()
+    c.execute("UPDATE videos SET note=?, note_en=?, quality=? WHERE id=?",
+              (note, note_en, quality, vid))
+    c.commit()
+
+
 def list_videos(user_id: str) -> List[Dict]:
     return [dict(r) for r in conn().execute(
         "SELECT * FROM videos WHERE user_id=? ORDER BY created DESC",
