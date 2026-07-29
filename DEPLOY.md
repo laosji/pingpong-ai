@@ -77,3 +77,51 @@ docker run --rm -v pipo_pipo-data:/d -v $(pwd):/b alpine \
 
 第一次部署建议盯着 `docker compose logs -f`，最可能出问题的三处：
 torch CPU 源是否可达、PANNs 权重下载是否被墙、域名解析是否已生效。
+
+## 七、接入对话助手（MCP）
+
+`mcp_server.py` 是 HTTP API 的薄封装 —— 所有逻辑仍在 API 里，
+这样网页端和助手端不会行为分叉。
+
+四个工具：
+
+| 工具 | 作用 |
+|---|---|
+| `pipo_upload_link` | 返回专属上传链接 + 操作提示 |
+| `pipo_list_videos` | 列出已上传的录像 |
+| `pipo_add_video` | 按 URL 添加录像 |
+| `pipo_make_highlight` | 生成集锦，返回下载链接 |
+
+Claude Desktop / Claude Code 的配置：
+
+```json
+{
+  "mcpServers": {
+    "pipo-ai": {
+      "command": "python",
+      "args": ["/path/to/mcp_server.py"],
+      "env": {
+        "PIPO_BASE_URL": "https://pipo.example.com",
+        "PIPO_TOKEN": "该用户魔法链接里的那串 token"
+      }
+    }
+  }
+}
+```
+
+ChatGPT 走 GPT Actions 的话不用这个文件，直接用 FastAPI 自动生成的
+`https://你的域名/openapi.json`（已验证可用，14 个接口）。
+注意 Actions 需要用 Bearer/API Key 而非 cookie 鉴权，得再加一层。
+
+### 固有边界：助手接不了本地大文件
+
+MCP 的工具参数是 JSON，传不了几百 MB 的视频。所以：
+
+* **能做**：用户已有公开直链 → `pipo_add_video` 直接拉
+* **做不到**：把手机相册里的视频交给助手
+* **绕法**：`pipo_upload_link` 返回一条已带登录的上传链接，
+  用户在浏览器传完回来说一声，助手再 `pipo_list_videos` 取到
+
+这不是实现问题，是这类集成的固有边界。接任何平台前都该先确认
+「该助手能否把对话里上传的文件暴露成临时 URL」——
+能，流程就通；不能，上传只能走网页。

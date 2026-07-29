@@ -102,6 +102,11 @@ class Recut(BaseModel):
     keep: List[int]
 
 
+class Ingest(BaseModel):
+    url: str
+    name: str = ""
+
+
 class Feedback(BaseModel):
     video: str
     start: float
@@ -254,6 +259,80 @@ async def upload(request: Request, file: UploadFile = File(...),
         "quality": m["quality_score"], "note": m["recommendation"],
         "note_en": m.get("recommendation_en", "")})
     if rec["path"] != dst:            # 同一用户重复上传，复用旧记录
+        os.unlink(dst)
+    return {k: rec[k] for k in ("id", "name", "duration", "width", "height",
+                                "quality", "note", "note_en")}
+
+
+@app.post("/api/ingest")
+def ingest(req: Ingest, u: Dict = Depends(current_user)):
+    """按 URL 拉取视频。外部系统（助手插件、小程序、脚本）驱动的入口 ——
+    表单上传只有浏览器能用。
+
+    边下边数字节：Content-Length 是对方给的，可以撒谎，也可能根本不给。
+    只允许 http(s)，且不解析到内网地址 —— 否则这是个 SSRF 洞，
+    能拿它探测同机的其它服务。
+    """
+    import ipaddress
+    import socket
+    import urllib.parse
+    import urllib.request
+
+    p = urllib.parse.urlparse(req.url)
+    if p.scheme not in ("http", "https") or not p.hostname:
+        raise HTTPException(400, "只支持 http/https 链接")
+    try:
+        infos = socket.getaddrinfo(p.hostname, None)
+    except OSError:
+        raise HTTPException(400, "域名无法解析")
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast):
+            raise HTTPException(400, "不允许内网地址")
+
+    ext = os.path.splitext(urllib.parse.unquote(p.path))[1].lower()
+    if ext not in ALLOWED_EXT:
+        ext = ".mp4"
+    udir = user_dir(UPLOADS, u["id"])
+    base = (req.name or os.path.basename(p.path) or "video")[:60]
+    if not base.lower().endswith(ALLOWED_EXT):
+        base += ext
+    dst = os.path.join(udir, os.path.basename(base).replace("/", "_"))
+    n = 1
+    while os.path.exists(dst):
+        st, e = os.path.splitext(dst)
+        dst = "%s_%d%s" % (st, n, e); n += 1
+
+    limit = MAX_UPLOAD_MB << 20
+    written = 0
+    try:
+        rq = urllib.request.Request(req.url, headers={"User-Agent": "PipoAI/1.0"})
+        with urllib.request.urlopen(rq, timeout=30) as r, open(dst, "wb") as fh:
+            while chunk := r.read(1 << 20):
+                written += len(chunk)
+                if written > limit:
+                    fh.close(); os.unlink(dst)
+                    raise HTTPException(413, "文件超过 %d MB 上限" % MAX_UPLOAD_MB)
+                fh.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        if os.path.exists(dst):
+            os.unlink(dst)
+        raise HTTPException(400, "拉取失败: %s" % str(e)[:120])
+
+    try:
+        m = probe(dst)
+    except Exception:
+        os.unlink(dst)
+        raise HTTPException(400, "无法解析这个视频")
+    rec = store.add_video(u["id"], {
+        "path": dst, "name": os.path.basename(dst), "fp": _fingerprint(dst),
+        "duration": m["duration"], "width": m["width"], "height": m["height"],
+        "quality": m["quality_score"], "note": m["recommendation"],
+        "note_en": m.get("recommendation_en", "")})
+    if rec["path"] != dst:
         os.unlink(dst)
     return {k: rec[k] for k in ("id", "name", "duration", "width", "height",
                                 "quality", "note", "note_en")}
