@@ -54,8 +54,11 @@ _HTML = r"""<!doctype html>
 <p class="k" style="padding:8px 16px">
   __WINNOTE__<br>
   时间轴上 <b>拖动</b> 标一次击球 · <b>单击</b> 定位 · <b>点已标记</b> 选中 · <kbd>Del</kbd> 删除 ·
-  <kbd>←</kbd><kbd>→</kbd> 0.2 秒微调（按住 Shift 为 5 秒）
-  <span style="color:#6f7684">　<span style="color:#3ecf80">绿=击球</span>　<span style="color:#e8933a">橙=捡球</span>　蓝=AI 预测</span>
+  <kbd>S</kbd> 标发球 / <kbd>Shift+S</kbd> 撤销最近的 ·
+  <kbd>←</kbd><kbd>→</kbd> 0.2 秒微调（按住 Shift 为 5 秒）<br>
+  <b style="color:#ffc078">击球请标双方</b> —— 只标一侧会让另一侧的真实击球被当成误报，
+  既低估准确率，也把一半真样本喂成负例训练。
+  <span style="color:#6f7684">　<span style="color:#3ecf80">绿=击球</span>　<span style="color:#e8933a">橙=捡球</span>　<span style="color:#ff5fd2">洋红竖线=发球</span>　蓝=AI 预测</span>
 </p>
 <script>
 const DUR=__DUR__, PPS=__PPS__, W=__W__, H=__H__, T0=__T0__, T1=__T1__;
@@ -93,7 +96,7 @@ function draw(){
   lab.hits.forEach(t=>{cx.beginPath();cx.moveTo(t2x(t),H-22);cx.lineTo(t2x(t),H);cx.stroke();});
   // 发球画整条竖线 + 顶部三角，和击球的短刻度明显区分 ——
   // 它标的是「回合从这里开始」，看的是位置对不对，得贯穿整个时间轴
-  cx.strokeStyle='#5ac8ff'; cx.lineWidth=1.5; cx.fillStyle='#5ac8ff';
+  cx.strokeStyle='#ff5fd2'; cx.lineWidth=1.5; cx.fillStyle='#ff5fd2';
   lab.serves.forEach(t=>{const x=t2x(t);
     cx.beginPath();cx.moveTo(x,0);cx.lineTo(x,H);cx.stroke();
     cx.beginPath();cx.moveTo(x-5,0);cx.lineTo(x+5,0);cx.lineTo(x,9);cx.closePath();cx.fill();});
@@ -142,8 +145,12 @@ function mark(){ if(mk===null){mk=v.currentTime;} else {
 function tog(){v.paused?v.play():v.pause();}
 function delSel(){if(sel>=0){lab[mode].splice(sel,1);sel=-1;draw();}}
 // 发球只记时间点，不记区间 —— 回合起点是一个时刻，不是一段
-function addServe(){lab.serves.push(v.currentTime);
-  lab.serves.sort((a,b)=>a-b);draw();}
+function addServe(){
+  const t=v.currentTime;
+  // 去重：暂停时连按两下 S 会在同一时刻插两条（实测标注里就出现了一个
+  // 1166.743 重复）。0.15 秒内视为同一次发球 —— 真实发球最快也隔几秒。
+  if(lab.serves.some(x=>Math.abs(x-t)<0.15)) return;
+  lab.serves.push(t); lab.serves.sort((a,b)=>a-b); draw();}
 function undoServe(){
   // 撤掉离当前播放头最近的那个，而不是最后加的 ——
   // 标错时人是回到出错的位置去改，不是回到时间顺序的末尾
