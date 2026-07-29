@@ -335,7 +335,10 @@ def dedupe(picked: List[Dict], used: List[Dict], cfg: Dict) -> List[Dict]:
         return picked
     out = []
     for p in picked:
-        if not any(min(p["end"], u["end"]) - max(p["start"], u["start"])
+        # 多素材时必须先比来源：不同视频的时间轴各自从 0 开始，
+        # 只比时间会把两段毫无关系的内容判成重复。
+        if not any(p.get("src") == u.get("src")
+                   and min(p["end"], u["end"]) - max(p["start"], u["start"])
                    > cfg.get("dedupe_overlap_s", 0.5) for u in used):
             out.append(p)
     for i, p in enumerate(out, 1):

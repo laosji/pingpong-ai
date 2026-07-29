@@ -106,9 +106,13 @@ def me(u: Dict = Depends(current_user)):
 
 # ── 数据模型 ──────────────────────────────────────────────
 class Job(BaseModel):
-    video: str                 # video id
+    video: str = ""            # 单个 video id（MCP / skill 仍在用，保持兼容）
+    videos: List[str] = []     # 多素材：当作一次训练课的若干段，合成一个成片
     themes: List[str] = ["auto"]
     top: int = 10
+
+    def ids(self) -> List[str]:
+        return self.videos or ([self.video] if self.video else [])
 
 
 class Recut(BaseModel):
@@ -143,44 +147,82 @@ def _fingerprint(path: str) -> str:
 
 
 # ── 任务 ──────────────────────────────────────────────────
-def _run(jid: str, uid: str, video_path: str, req: Job) -> None:
+def _run(jid: str, uid: str, video_paths: List[str], req: Job) -> None:
+    """多素材当作一次训练课的若干段：各自检测，回合合池后统一排序。
+
+    检测必须逐个视频做 —— 击球时间戳、运动曲线都是各自时间轴上的，
+    拼起来算会在每个衔接处凭空造出一个巨大的空档。只有回合列表能合池，
+    因为每个回合都带着自己的 src 和本地时间。
+    """
+    import numpy as np
+
     def step(msg: str) -> None:
         store.update_job(jid, stage=msg)
     try:
         cfg = config.load()
         hcfg = dict(cfg["highlight"])
         hcfg["top_n"] = req.top
-        step("读取音轨")
-        pcm = audio.extract_pcm(video_path, cfg["audio"]["sr"])
-        hits, env, _, fr = audio.detect_hits(pcm, cfg["audio"])
+        multi = len(video_paths) > 1
         rc = cfg.get("rerank", {})
-        if rc.get("enabled") and len(hits):
-            model = rerank.load(rc.get("model", rerank.MODEL_PATH))
-            if model is not None:
-                step("重排候选")
-                hits = rerank.apply(video_path, hits, model, rc.get("keep_ratio", 0.6))
-        amps = audio.hit_amplitudes(hits, env, fr)
-        step("分析画面运动")
-        m_t, m_v = motion.motion_curve(video_path, cfg["motion"])
-        rs = highlight.score(highlight.rallies(hits, hcfg, amps), m_t, m_v, hcfg)
-        meta = probe(video_path)
-        vk = highlight.video_kind(rs, meta["duration"], hcfg)
-        summary = stats.summarize(rs, hits, amps, meta["duration"], vk,
+        model = (rerank.load(rc.get("model", rerank.MODEL_PATH))
+                 if rc.get("enabled") else None)
+
+        per, pool, gh, ga, base = [], [], [], [], 0.0
+        for n, vp in enumerate(video_paths, 1):
+            tag = "（%d/%d）" % (n, len(video_paths)) if multi else ""
+            step("读取音轨" + tag)
+            pcm = audio.extract_pcm(vp, cfg["audio"]["sr"])
+            hits, env, _, fr = audio.detect_hits(pcm, cfg["audio"])
+            if model is not None and len(hits):
+                step("重排候选" + tag)
+                hits = rerank.apply(vp, hits, model, rc.get("keep_ratio", 0.6))
+            amps = audio.hit_amplitudes(hits, env, fr)
+            step("分析画面运动" + tag)
+            m_t, m_v = motion.motion_curve(vp, cfg["motion"])
+            rs = highlight.score(highlight.rallies(hits, hcfg, amps), m_t, m_v, hcfg)
+            for r in rs:
+                r["src"] = vp
+            meta = probe(vp)
+            per.append({"path": vp, "hits": hits, "duration": meta["duration"]})
+            pool.extend(rs)
+            # 统计口径要的是「整堂课」，所以把各段时间轴接成一条：
+            # 不加偏移，第二段的时间戳会落回第一段里面。
+            gh.append(np.asarray(hits) + base)
+            ga.append(np.asarray(amps))
+            base += meta["duration"]
+
+        hits_all = np.concatenate(gh) if gh else np.zeros(0)
+        amps_all = np.concatenate(ga) if ga else np.zeros(0)
+        total = base
+        vk = highlight.video_kind(pool, total, hcfg)
+        summary = stats.summarize(pool, hits_all, amps_all, total, vk,
                                   busy_gap=hcfg.get("busy_gap_s", 0.3))
+        summary["source_count"] = len(video_paths)
 
         kinds = req.themes
         if kinds == ["auto"]:
             kinds = ["trim"]      # 自动 = 完整版：去掉捡球和等待，一个球都不漏
 
+        canvas = render.pick_canvas(
+            video_paths, {p["path"]: p["duration"] for p in per})
         odir = user_dir(OUT, uid)
-        stem = os.path.splitext(os.path.basename(video_path))[0][:40]
+        stem = os.path.splitext(os.path.basename(video_paths[0]))[0][:40]
+        if multi:
+            stem = "%s_+%d" % (stem[:32], len(video_paths) - 1)
         results, used = [], []
         for kind in kinds:
             step("剪辑：%s" % highlight.RANKERS.get(kind, kind).split(" ")[0])
             if kind == "trim":
-                picked = highlight.trim_idle(hits, meta["duration"], hcfg)
+                # 完整版按素材顺序逐个剪，保持时间线；id 全局重编，
+                # 否则每个源都从 1 开始，seg_001.mp4 会互相覆盖。
+                picked = []
+                for p in per:
+                    for s_ in highlight.trim_idle(p["hits"], p["duration"], hcfg):
+                        s_["src"] = p["path"]
+                        s_["id"] = len(picked) + 1
+                        picked.append(s_)
             else:
-                picked = highlight.select(highlight.rank(rs, kind, hcfg), hcfg)
+                picked = highlight.select(highlight.rank(pool, kind, hcfg), hcfg)
                 if len(kinds) > 1:
                     picked = highlight.dedupe(picked, used, hcfg)
             used.extend(picked)
@@ -188,8 +230,8 @@ def _run(jid: str, uid: str, video_path: str, req: Job) -> None:
                 results.append({"theme": kind, "empty": True})
                 continue
             seg_dir = "%s_hl_%s" % (stem, kind)
-            parts = render.cut(video_path, picked, os.path.join(odir, seg_dir),
-                               cfg["render"])
+            parts = render.cut(video_paths[0], picked, os.path.join(odir, seg_dir),
+                               cfg["render"], canvas=canvas)
             final = render.concat(parts, os.path.join(odir, "%s_%s.mp4" % (stem, kind)))
             off = 0.0
             for s_, part in zip(picked, parts):
@@ -357,11 +399,14 @@ def ingest(req: Ingest, u: Dict = Depends(current_user)):
 
 @app.post("/api/jobs")
 def create(req: Job, u: Dict = Depends(current_user)):
-    v = store.get_video(u["id"], req.video)
-    if not v:
-        raise HTTPException(404, "视频不存在")
-    jid = store.create_job(u["id"], v["id"])
-    threading.Thread(target=_run, args=(jid, u["id"], v["path"], req),
+    ids = req.ids()
+    if not ids:
+        raise HTTPException(400, "没有选择视频")
+    vs = [store.get_video(u["id"], i) for i in ids]
+    if any(v is None for v in vs):
+        raise HTTPException(404, "视频不存在")     # 含别人的视频时也走这里
+    jid = store.create_job(u["id"], vs[0]["id"])
+    threading.Thread(target=_run, args=(jid, u["id"], [v["path"] for v in vs], req),
                      daemon=True).start()
     return {"id": jid}
 
@@ -655,7 +700,7 @@ def _mcp_dispatch(name: str, args: Dict, u: Dict, base: str) -> Dict:
             raise HTTPException(404, "视频不存在")
         # 同步跑：MCP 调用方在等返回，异步反而要它自己轮询。
         # 一小时视频约 48 秒，在助手可接受的等待范围内。
-        _run(jid, u["id"], v["path"],
+        _run(jid, u["id"], [v["path"]],
              Job(video=args["video_id"], themes=[args.get("theme", "auto")],
                  top=int(args.get("top", 10))))
         j = store.get_job(u["id"], jid)

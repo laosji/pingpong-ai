@@ -195,7 +195,9 @@ video{max-width:100%;display:block}
       </label>
     </div>
     <div id="prog"></div>
-    <div class="side-body" id="list" role="listbox" aria-label="录像列表"></div>
+    <div class="side-body" id="list" role="listbox" aria-multiselectable="true"
+         aria-label="录像列表"></div>
+    <div class="note" id="multihint" style="padding:8px 12px 12px"></div>
   </div>
   <div class="stage-wrap"><div class="stage" id="stage"></div></div>
 </div>
@@ -206,6 +208,7 @@ const I18N = {
        upfail:'上传失败', nobackend:'后端没连上',
        novideo:'还没有录像。点右上角「选择文件」，或把视频拖进来。',
        blank:'选一段录像开始', blankSub:'也可以把视频文件拖到左侧',
+       multiHint:'按住 ⌘ / Ctrl 可多选', multiSel:'已选 %d 段素材 · 合计 %s',
        duration:'时长', resolution:'分辨率', quality:'质量评分',
        theme:'剪辑主题', go:'开始剪辑', submitting:'提交中', failed:'剪辑失败',
        auto:'自动', autoDesc:'去掉捡球和等待，一个球都不漏（约压到六成）',
@@ -224,6 +227,7 @@ const I18N = {
        nobackend:'Backend not reachable',
        novideo:'No videos yet. Click "Choose file", or drop one here.',
        blank:'Pick a video to start', blankSub:'or drop a file on the left',
+       multiHint:'Hold ⌘ / Ctrl to pick several', multiSel:'%d clips selected · %s total',
        duration:'Length', resolution:'Resolution', quality:'Quality',
        theme:'Edit style', go:'Create', submitting:'Submitting', failed:'Failed',
        auto:'Auto', autoDesc:'Cuts out ball retrieval and waiting — every rally kept (about 60% of the original)',
@@ -262,7 +266,7 @@ const mmss = s => { const t = Math.round(s);
   return `${Math.floor(t/60)}:${String(t%60).padStart(2,'0')}`; };
 const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-let videos=[], themes=[], cur=null, pickTheme='auto', poll=null;
+let videos=[], themes=[], cur=null, sel=new Set(), pickTheme='auto', poll=null;
 
 async function boot(){
   $('#list').innerHTML = '<div class="sk" style="height:50px;margin:2px 0"></div>'.repeat(4);
@@ -287,8 +291,10 @@ function drawList(){
       `<div class="t">${esc(v.name)}</div>
        <div class="s">${mmss(v.duration)} · ${v.width}×${v.height}</div>`);
     b.setAttribute('role','option');
-    b.setAttribute('aria-selected', cur===v ? 'true':'false');
-    b.onclick = ()=>choose(i);
+    b.setAttribute('aria-selected', sel.has(v.id) ? 'true':'false');
+    // 普通点击=只选这个（保持原来的单选手感），⌘/Ctrl/Shift+点击=加选。
+    // 反过来做（点击即切换）会让「换一个视频」变成两步操作。
+    b.onclick = e => choose(i, e.metaKey||e.ctrlKey||e.shiftKey);
     L.appendChild(b);
   });
 }
@@ -298,12 +304,23 @@ function blank(ic,msg,sub){
     ${sub?`<div class="sub">${sub}</div>`:''}</div>`;
 }
 
-function choose(i){
-  cur = videos[i];
+function choose(i, add){
+  const v = videos[i];
+  if(add){
+    sel.has(v.id) ? sel.delete(v.id) : sel.add(v.id);
+    if(!sel.size) sel.add(v.id);       // 不允许清空到零，否则没东西可剪
+  } else {
+    sel = new Set([v.id]);
+  }
+  // cur 是「面板上显示哪一段」：加选时保持不动，单选时跟着走。
+  if(!cur || !sel.has(cur.id)) cur = picked()[0];
   [...$('#list').children].forEach((e,j)=>
-    e.setAttribute('aria-selected', j===i?'true':'false'));
+    e.setAttribute('aria-selected', sel.has(videos[j].id)?'true':'false'));
   draw();
 }
+
+// sel 存 id 不存对象：上传后 videos 会整个重建，存引用会让选中态凭空丢失。
+function picked(){ return videos.filter(v=>sel.has(v.id)); }
 
 /* 原生菜单里只留「播放速度」：下载在卡片上已有独立入口，重复了。
    #t=0.5 让浏览器解码并显示首帧 —— 否则 preload=metadata 下播放器是一片纯黑，
@@ -330,7 +347,11 @@ function draw(){
              <span>⚠</span><span>${esc(LANG==='en'?(v.note_en||v.note):v.note)}</span></div></div>` : ''}
     </div>
     <div class="card">
-      <div class="card-hd"><h3>${t('theme')}</h3></div>
+      <div class="card-hd"><h3>${t('theme')}</h3>${picked().length>1
+        ? `<span class="who">${t('multiSel')
+             .replace('%d', picked().length)
+             .replace('%s', mmss(picked().reduce((a,x)=>a+x.duration,0)))}</span>`
+        : ''}</div>
       <div class="card-pad">
         <div class="chips" id="chips" role="group" aria-label="剪辑主题"></div>
         <div class="desc" id="desc"></div>
@@ -364,7 +385,8 @@ async function start(){
   let r;
   try{
     r = await fetch('/api/jobs',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({video:cur.id, themes:[pickTheme], top:10})}).then(x=>x.json());
+      body:JSON.stringify({videos:picked().map(v=>v.id),
+                           themes:[pickTheme], top:10})}).then(x=>x.json());
   }catch(e){ return fail(t('failed')); }
   clearInterval(poll);
   poll = setInterval(async ()=>{
@@ -558,6 +580,8 @@ function applyLang(){
   $('#tagline').textContent = t('tagline');
   $('#lbl-videos').textContent = t('videos');
   $('#uptxt').textContent = t('pick');
+  // 多选是隐藏交互，不写出来没人会去按 ⌘ —— 只在有得选时才提示
+  $('#multihint').textContent = videos.length > 1 ? t('multiHint') : '';
   drawList();
   if(cur) draw(); else blank('▤', t('blank'), t('blankSub'));
 }
