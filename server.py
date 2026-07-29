@@ -336,7 +336,17 @@ def feedback(fb: Feedback, u: Dict = Depends(current_user)):
     lab = L.load(path) if os.path.exists(path) else L.empty(v["path"], v["duration"])
     lab["negative_ranges"] = list(lab.get("negative_ranges") or []) + [[fb.start, fb.end]]
     L.save(lab, path)
+    # 立刻固化这段的嵌入 —— 原片会按生命周期规则删除，晚了就没得算了。
+    # 放后台是因为要跑一次 PANNs，几秒钟，不该让用户的点击等着。
+    threading.Thread(target=_freeze_quietly, args=(v["path"], path), daemon=True).start()
     return {"ok": True, "ranges": len(lab["negative_ranges"])}
+
+
+def _freeze_quietly(video: str, label_path: str) -> None:
+    try:
+        rerank.freeze(video, label_path, config.load())
+    except Exception:
+        traceback.print_exc()
 
 
 @app.get("/api/feedback")

@@ -46,8 +46,49 @@ def _features(video: str, cand: np.ndarray, cache_dir: Optional[str]) -> np.ndar
     return f[idx]
 
 
+def freeze(video: str, label_path: str, cfg: Dict, cache_dir: str = "cache") -> str:
+    """把标注区间内的候选时刻和嵌入固化到 .npz，让标注脱离原视频独立存在。
+
+    **这是「视频临时存储、到期自动删除」架构的前提。** 训练需要重读原片
+    算嵌入（见 build_dataset），视频一删，该标注就在训练时被静默跳过 ——
+    不报错，只是某天发现指标不再涨。用户反馈这条复利机制会就这么废掉。
+
+    只固化标注区间内的候选，不是整个视频：一次反馈通常只涉及几十个候选，
+    2048 维 float16 约 100KB，相比原片几十上百 MB 可以忽略。
+    """
+    from . import audio, labels as L
+
+    lab = L.load(label_path)
+    rng = list(L.scored_ranges(lab)) + list(lab.get("negative_ranges") or [])
+    if not rng:
+        return ""
+    pcm = audio.extract_pcm(video, cfg["audio"]["sr"])
+    det, _, _, _ = audio.detect_hits(pcm, cfg["audio"])
+    keep = np.zeros(len(det), bool)
+    for a, b in rng:
+        keep |= (det >= a) & (det <= b)
+    cand = det[keep]
+    if len(cand) == 0:
+        return ""
+    X = _features(video, cand, cache_dir)
+    dst = os.path.splitext(label_path)[0] + ".npz"
+    np.savez_compressed(dst, times=cand, feats=X.astype(np.float16))
+    return dst
+
+
+def _frozen(label_path: str):
+    p = os.path.splitext(label_path)[0] + ".npz"
+    if not os.path.exists(p):
+        return None
+    d = np.load(p)
+    return d["times"], d["feats"].astype(np.float32)
+
+
 def build_dataset(label_dir: str, cfg: Dict, cache_dir: str = "cache") -> Tuple:
-    """从所有带 complete_ranges 的标注里构造训练集。"""
+    """从所有带 complete_ranges 或 negative_ranges 的标注里构造训练集。
+
+    优先用固化的 .npz —— 原视频可能已按生命周期规则删除。
+    """
     from . import audio, labels as L
 
     X, y, groups = [], [], []
@@ -63,8 +104,9 @@ def build_dataset(label_dir: str, cfg: Dict, cache_dir: str = "cache") -> Tuple:
         if rng and not lab["playing"]:
             continue
         video = lab["video"]
-        if not os.path.exists(video):
-            print("  跳过（视频不存在）: %s" % os.path.basename(video))
+        frz = _frozen(path)
+        if not os.path.exists(video) and frz is None:
+            print("  跳过（视频和固化嵌入都不在）: %s" % os.path.basename(video))
             continue
         # 只标了捡球、没标击球的区间，是标注遗漏而不是「这段真的没人打球」——
         # 若当成穷尽标注，该区间所有候选（含真实击球）都会变成负例，
@@ -80,8 +122,12 @@ def build_dataset(label_dir: str, cfg: Dict, cache_dir: str = "cache") -> Tuple:
             if not rng:
                 continue
 
-        pcm = audio.extract_pcm(video, cfg["audio"]["sr"])
-        det, _, _, _ = audio.detect_hits(pcm, cfg["audio"])
+        if frz is not None:
+            det, feats = frz
+        else:
+            pcm = audio.extract_pcm(video, cfg["audio"]["sr"])
+            det, _, _, _ = audio.detect_hits(pcm, cfg["audio"])
+            feats = None
         keep = np.zeros(len(det), bool)
         for a, b in rng:
             keep |= (det >= a) & (det <= b)
@@ -97,10 +143,12 @@ def build_dataset(label_dir: str, cfg: Dict, cache_dir: str = "cache") -> Tuple:
         yy = np.array([0 if in_neg[np.searchsorted(det, c)]
                        else (1 if len(truth) and np.any(np.abs(truth - c) <= TOL) else 0)
                        for c in cand])
-        X.append(_features(video, cand, cache_dir))
+        X.append(feats[keep] if feats is not None else _features(video, cand, cache_dir))
         y.append(yy)
         groups.append(np.full(len(cand), os.path.basename(path)))
         tag = "" if not neg else "  [含 %d 段用户反馈]" % len(neg)
+        if frz is not None:
+            tag += "  [用固化嵌入，无需原片]"
         print("  %-40s %4d 候选 / %3d 真 (准确率 %.3f)%s"
               % (os.path.basename(video)[:40], len(cand), yy.sum(), yy.mean(), tag))
     if not X:
