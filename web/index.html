@@ -74,6 +74,21 @@ button,input,label{font-family:inherit}
   white-space:nowrap;transition:all .12s ease}
 .up:hover{border-color:var(--accent);color:var(--accent)}
 .up[data-busy="1"]{opacity:.55;pointer-events:none}
+.side-acts{display:flex;gap:6px;align-items:center}
+/* 导入是主操作 —— 列表空的时候它是唯一能干的事，得一眼看到。
+   多选是次操作，保持描边。 */
+.up.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);
+  font-weight:560}
+.up.primary:hover{filter:brightness(1.08);color:var(--on-accent)}
+/* 多选激活用淡色底而不是实心：两个实心按钮并排会互相抢，
+   但又必须看得出是「按下」状态 —— 否则用户不知道当前点击会叠加还是替换。 */
+.up[aria-pressed="true"]{background:var(--accent-wash);border-color:var(--accent);
+  color:var(--accent);font-weight:560}
+.item .ck{float:right;width:15px;height:15px;border:1.5px solid var(--line-2);
+  border-radius:4px;margin-left:8px;display:grid;place-items:center;
+  font-size:10px;line-height:1;color:transparent;flex:0 0 auto}
+.item[aria-selected="true"] .ck{border-color:var(--accent);background:var(--accent);
+  color:var(--on-accent)}
 .prog{height:2px;background:var(--line);border-radius:2px;overflow:hidden;margin:0 16px 10px}
 .prog i{display:block;height:100%;background:var(--accent);width:0;transition:width .12s}
 .side.drop{outline:2px dashed var(--accent);outline-offset:-10px;background:var(--accent-wash)}
@@ -189,10 +204,14 @@ video{max-width:100%;display:block}
   <div class="side" id="side">
     <div class="side-hd">
       <span class="eyebrow" id="lbl-videos">录像</span>
-      <label class="up" id="up">
-        <input type="file" id="file" accept="video/mp4,video/quicktime,.mp4,.mov,.m4v" hidden>
-        <span id="uptxt">选择文件</span>
-      </label>
+      <div class="side-acts">
+        <button class="up" id="multi" type="button"><span id="multitxt">选择文件</span></button>
+        <label class="up primary" id="up">
+          <input type="file" id="file" multiple
+                 accept="video/mp4,video/quicktime,.mp4,.mov,.m4v" hidden>
+          <span id="uptxt">导入素材</span>
+        </label>
+      </div>
     </div>
     <div id="prog"></div>
     <div class="side-body" id="list" role="listbox" aria-multiselectable="true"
@@ -204,11 +223,12 @@ video{max-width:100%;display:block}
 
 <script>
 const I18N = {
-  zh:{ tagline:'训练录像，自动出片', videos:'录像', pick:'选择文件', uploading:'上传中',
+  zh:{ tagline:'训练录像，自动出片', videos:'录像', pick:'导入素材', uploading:'上传中',
        upfail:'上传失败', nobackend:'后端没连上',
-       novideo:'还没有录像。点右上角「选择文件」，或把视频拖进来。',
+       novideo:'还没有录像。点右上角「导入素材」，或把视频拖进来。',
        blank:'选一段录像开始', blankSub:'也可以把视频文件拖到左侧',
-       multiHint:'按住 ⌘ / Ctrl 可多选', multiSel:'已选 %d 段素材 · 合计 %s',
+       multiHint:'点「多选素材」可挑多段一起剪', multiSel:'已选 %d 段素材 · 合计 %s',
+       selMode:'多选素材', selDone:'完成 (%d)', multiOn:'点条目加选／取消，选好后点「完成」',
        duration:'时长', resolution:'分辨率', quality:'质量评分',
        theme:'剪辑主题', go:'开始剪辑', submitting:'提交中', failed:'剪辑失败',
        auto:'自动', autoDesc:'去掉捡球和等待，一个球都不漏（约压到六成）',
@@ -223,11 +243,12 @@ const I18N = {
        fbSome:(n,s,v)=>`已收到 <b>${n}</b> 处反馈，共 <b>${s}</b> 秒，来自 ${v} 个视频。这些会作为负例并入下次训练。`,
        segTitle:'下载这一段', delTitle:'删除这一段' },
   en:{ tagline:'Your table tennis highlights, automatically', videos:'Videos',
-       pick:'Choose file', uploading:'Uploading', upfail:'Upload failed',
+       pick:'Import', uploading:'Uploading', upfail:'Upload failed',
        nobackend:'Backend not reachable',
-       novideo:'No videos yet. Click "Choose file", or drop one here.',
+       novideo:'No videos yet. Click "Import", or drop one here.',
        blank:'Pick a video to start', blankSub:'or drop a file on the left',
-       multiHint:'Hold ⌘ / Ctrl to pick several', multiSel:'%d clips selected · %s total',
+       multiHint:'Use “Multi-select” to combine several clips', multiSel:'%d clips selected · %s total',
+       selMode:'Multi-select', selDone:'Done (%d)', multiOn:'Tap items to add or remove, then “Done”',
        duration:'Length', resolution:'Resolution', quality:'Quality',
        theme:'Edit style', go:'Create', submitting:'Submitting', failed:'Failed',
        auto:'Auto', autoDesc:'Cuts out ball retrieval and waiting — every rally kept (about 60% of the original)',
@@ -267,6 +288,7 @@ const mmss = s => { const t = Math.round(s);
 const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 let videos=[], themes=[], cur=null, sel=new Set(), pickTheme='auto', poll=null;
+let multiMode=false;
 
 async function boot(){
   $('#list').innerHTML = '<div class="sk" style="height:50px;margin:2px 0"></div>'.repeat(4);
@@ -290,11 +312,14 @@ function drawList(){
     const b = el('button','item',
       `<div class="t">${esc(v.name)}</div>
        <div class="s">${mmss(v.duration)} · ${v.width}×${v.height}</div>`);
+    if(multiMode) b.querySelector('.t').insertAdjacentHTML('afterbegin',
+      '<span class="ck">✓</span>');
     b.setAttribute('role','option');
     b.setAttribute('aria-selected', sel.has(v.id) ? 'true':'false');
-    // 普通点击=只选这个（保持原来的单选手感），⌘/Ctrl/Shift+点击=加选。
-    // 反过来做（点击即切换）会让「换一个视频」变成两步操作。
-    b.onclick = e => choose(i, e.metaKey||e.ctrlKey||e.shiftKey);
+    // 多选模式下点击即切换；平时点击=只选这个，保持单选手感 ——
+    // 反过来做会让「换一个视频」变成先取消再选的两步。
+    // ⌘/Ctrl/Shift 作为熟手快捷方式一直有效。
+    b.onclick = e => choose(i, multiMode||e.metaKey||e.ctrlKey||e.shiftKey);
     L.appendChild(b);
   });
 }
@@ -316,11 +341,28 @@ function choose(i, add){
   if(!cur || !sel.has(cur.id)) cur = picked()[0];
   [...$('#list').children].forEach((e,j)=>
     e.setAttribute('aria-selected', sel.has(videos[j].id)?'true':'false'));
+  syncMulti();
   draw();
 }
 
 // sel 存 id 不存对象：上传后 videos 会整个重建，存引用会让选中态凭空丢失。
 function picked(){ return videos.filter(v=>sel.has(v.id)); }
+
+// 「多选素材」开关：在已导入的素材里挑几段一起剪。
+// 做成显式模式而不是只靠 ⌘ —— 修饰键是隐藏交互，没人会去猜。
+function syncMulti(){
+  const b=$('#multi');
+  b.setAttribute('aria-pressed', multiMode?'true':'false');
+  $('#multitxt').textContent = multiMode
+    ? t('selDone').replace('%d', picked().length) : t('selMode');
+  b.style.display = videos.length > 1 ? '' : 'none';
+  $('#multihint').textContent =
+    videos.length < 2 ? '' : (multiMode ? t('multiOn') : t('multiHint'));
+}
+$('#multi').onclick = ()=>{
+  multiMode = !multiMode;
+  drawList(); syncMulti();
+};
 
 /* 原生菜单里只留「播放速度」：下载在卡片上已有独立入口，重复了。
    #t=0.5 让浏览器解码并显示首帧 —— 否则 preload=metadata 下播放器是一片纯黑，
@@ -536,8 +578,9 @@ async function loadFeedback(){
   }catch(e){ el.textContent=''; }
 }
 
-function upload(f){
-  if(!f) return;
+function upload(f, done){
+  const fin = ()=>{ if(done) done(); };
+  if(!f) return fin();
   const lab=$('#up'), txt=$('#uptxt');
   lab.dataset.busy='1'; txt.textContent=t('uploading');
   $('#prog').innerHTML='<div class="prog"><i id="pb"></i></div>';
@@ -546,33 +589,44 @@ function upload(f){
     $('#pb').style.width = (100*e.loaded/e.total)+'%'; };
   const reset=()=>{ lab.dataset.busy=''; txt.textContent=t('pick'); $('#prog').innerHTML=''; };
   const err=m=>{ reset();
-    $('#prog').innerHTML=`<div class="note" style="padding:0 16px 10px;color:var(--warn)">${esc(m)}</div>`; };
+    $('#prog').innerHTML=`<div class="note" style="padding:0 16px 10px;color:var(--warn)">${esc(m)}</div>`;
+    fin(); };
   xhr.onload = ()=>{
     if(xhr.status===200){
       reset();
       const v = JSON.parse(xhr.responseText);
       const at = videos.findIndex(x => x.fp && x.fp === v.fp);
-      if(at >= 0){ choose(at); drawList();      // 已有同一个视频，直接选中它
+      if(at >= 0){ choose(at, multiMode); drawList();   // 已有同一个视频，直接选中它
         $('#prog').innerHTML =
           '<div class="note" style="padding:0 16px 10px">这个视频已经在列表里了</div>';
         setTimeout(()=>$('#prog').innerHTML='', 2600);
-      }else{ videos.push(v); drawList(); choose(videos.length-1); }
+      }else{
+        videos.push(v); drawList();
+        // 多选模式下新导入的素材应该加进选择，而不是把已选的全顶掉
+        choose(videos.length-1, multiMode);
+      }
+      fin();
     }else{
       let m=t('upfail'); try{ m=JSON.parse(xhr.responseText).detail||m; }catch(e){}
       err(m);
     }
   };
-  xhr.onerror = ()=>err(t('upfail'));
+  xhr.onerror = ()=>err(t('upfail'));    // err 里已经 fin()
   const fd=new FormData(); fd.append('file',f); xhr.send(fd);
 }
 
-$('#file').onchange = e => { upload(e.target.files[0]); e.target.value=''; };
+// 顺序上传而不是并发：并发几个几百 MB 的文件会互相抢带宽，
+// 进度条也没法表达「第几个」。
+async function uploadAll(files){
+  for(const f of [...files]) await new Promise(done => upload(f, done));
+}
+$('#file').onchange = e => { uploadAll(e.target.files); e.target.value=''; };
 const S=$('#side');
 ['dragenter','dragover'].forEach(k=>S.addEventListener(k,e=>{
   e.preventDefault(); S.classList.add('drop'); }));
 ['dragleave','drop'].forEach(k=>S.addEventListener(k,e=>{
   e.preventDefault(); S.classList.remove('drop'); }));
-S.addEventListener('drop', e => upload(e.dataTransfer.files[0]));
+S.addEventListener('drop', e => uploadAll(e.dataTransfer.files));
 
 function applyLang(){
   document.documentElement.lang = LANG==='zh' ? 'zh-CN' : 'en';
@@ -580,8 +634,7 @@ function applyLang(){
   $('#tagline').textContent = t('tagline');
   $('#lbl-videos').textContent = t('videos');
   $('#uptxt').textContent = t('pick');
-  // 多选是隐藏交互，不写出来没人会去按 ⌘ —— 只在有得选时才提示
-  $('#multihint').textContent = videos.length > 1 ? t('multiHint') : '';
+  syncMulti();
   drawList();
   if(cur) draw(); else blank('▤', t('blank'), t('blankSub'));
 }
