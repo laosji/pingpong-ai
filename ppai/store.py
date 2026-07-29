@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS videos(
 CREATE TABLE IF NOT EXISTS jobs(
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL, video_id TEXT,
   state TEXT NOT NULL, stage TEXT, payload TEXT, created REAL NOT NULL, updated REAL);
+CREATE TABLE IF NOT EXISTS oauth_codes(
+  code TEXT PRIMARY KEY, user_id TEXT NOT NULL, client_id TEXT,
+  redirect_uri TEXT, challenge TEXT, created REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_videos_user ON videos(user_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_videos_user_fp ON videos(user_id, fp);
@@ -90,6 +93,31 @@ def delete_user(uid: str) -> int:
     n = c.execute("DELETE FROM users WHERE id=?", (uid,)).rowcount
     c.commit()
     return n
+
+
+# ── OAuth 授权码 ──────────────────────────────────────────
+def put_code(user_id: str, client_id: str, redirect_uri: str,
+             challenge: str) -> str:
+    code = secrets.token_urlsafe(32)
+    c = conn()
+    c.execute("""INSERT INTO oauth_codes(code,user_id,client_id,redirect_uri,
+                 challenge,created) VALUES(?,?,?,?,?,?)""",
+              (code, user_id, client_id, redirect_uri, challenge, time.time()))
+    c.commit()
+    return code
+
+
+def take_code(code: str) -> Optional[Dict]:
+    """一次性取用：取出即删。授权码重放是 OAuth 的经典攻击面。"""
+    c = conn()
+    r = c.execute("SELECT * FROM oauth_codes WHERE code=?", (code,)).fetchone()
+    if not r:
+        return None
+    c.execute("DELETE FROM oauth_codes WHERE code=?", (code,))
+    c.execute("DELETE FROM oauth_codes WHERE created < ?", (time.time() - 600,))
+    c.commit()
+    d = dict(r)
+    return None if time.time() - d["created"] > 600 else d      # 10 分钟过期
 
 
 # ── 视频 ──────────────────────────────────────────────────

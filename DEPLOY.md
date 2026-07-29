@@ -78,21 +78,60 @@ docker run --rm -v pipo_pipo-data:/d -v $(pwd):/b alpine \
 第一次部署建议盯着 `docker compose logs -f`，最可能出问题的三处：
 torch CPU 源是否可达、PANNs 权重下载是否被墙、域名解析是否已生效。
 
-## 七、接入对话助手（MCP）
+## 七、接入 ChatGPT / Claude
 
-`mcp_server.py` 是 HTTP API 的薄封装 —— 所有逻辑仍在 API 里，
-这样网页端和助手端不会行为分叉。
+三种接法，覆盖不同客户端：
 
-四个工具：
+| 客户端 | 接法 | 用户要做什么 |
+|---|---|---|
+| **claude.ai 连接器** | `https://域名/mcp` | 粘贴 URL → 点「同意」 |
+| **ChatGPT 连接器 / GPT Actions** | 同上，或 `/openapi.json` | 同上 |
+| Claude Desktop / Code | `mcp_server.py`（stdio） | 装 Python、配 json |
+
+远程连接器不用装任何东西，是主推方式。
+
+### OAuth：用户不用碰 token
+
+**先澄清一点**：OpenAI 和 Anthropic 都没有面向第三方的公开身份登录，
+所以做不到「用 ChatGPT/Claude 账号识别用户」。身份始终是我们自己的（邀请码）。
+
+但 MCP 规范里的 OAuth 能达到同样的体验 —— 助手把用户弹到**我们的**授权页，
+点一次同意，token 自动回传，用户全程不碰 token：
+
+```
+claude.ai 添加连接器 https://域名/mcp
+   → 401 + WWW-Authenticate 指回资源元数据
+   → 客户端读 /.well-known/oauth-authorization-server
+   → 动态注册（RFC 7591）拿 client_id
+   → 弹出我们的授权页，用户填邀请码（或已登录则直接确认）
+   → 回调带 code → 用 PKCE 换 access_token
+   → 之后所有调用带 Bearer
+```
+
+全流程已实测跑通，四项安全检查通过：授权码不可重放、PKCE 强制校验、
+无效邀请码被拒、危险回调地址被拒。
+
+### 四个工具
 
 | 工具 | 作用 |
 |---|---|
-| `pipo_upload_link` | 返回专属上传链接 + 操作提示 |
+| `pipo_upload_link` | 返回已带登录的上传链接 + 操作提示 |
 | `pipo_list_videos` | 列出已上传的录像 |
-| `pipo_add_video` | 按 URL 添加录像 |
+| `pipo_add_video` | 按公开直链添加录像 |
 | `pipo_make_highlight` | 生成集锦，返回下载链接 |
 
-Claude Desktop / Claude Code 的配置：
+### 固有边界：助手接不了本地大文件
+
+MCP 的工具参数是 JSON，传不了几百 MB 的视频。所以：
+
+* **能做**：用户已有公开直链 → `pipo_add_video` 直接拉
+* **做不到**：把手机相册里的视频交给助手
+* **绕法**：`pipo_upload_link` 给一条已带登录的上传链接，
+  用户在浏览器传完回来说一声，助手再 `pipo_list_videos` 取到
+
+这不是实现问题，是这类集成的固有边界。
+
+### Claude Desktop / Code（本地 stdio）
 
 ```json
 {
@@ -108,20 +147,3 @@ Claude Desktop / Claude Code 的配置：
   }
 }
 ```
-
-ChatGPT 走 GPT Actions 的话不用这个文件，直接用 FastAPI 自动生成的
-`https://你的域名/openapi.json`（已验证可用，14 个接口）。
-注意 Actions 需要用 Bearer/API Key 而非 cookie 鉴权，得再加一层。
-
-### 固有边界：助手接不了本地大文件
-
-MCP 的工具参数是 JSON，传不了几百 MB 的视频。所以：
-
-* **能做**：用户已有公开直链 → `pipo_add_video` 直接拉
-* **做不到**：把手机相册里的视频交给助手
-* **绕法**：`pipo_upload_link` 返回一条已带登录的上传链接，
-  用户在浏览器传完回来说一声，助手再 `pipo_list_videos` 取到
-
-这不是实现问题，是这类集成的固有边界。接任何平台前都该先确认
-「该助手能否把对话里上传的文件暴露成临时 URL」——
-能，流程就通；不能，上传只能走网页。

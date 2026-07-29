@@ -13,15 +13,20 @@
 """
 from __future__ import annotations
 
+import base64
 import glob
 import hashlib
+import json
 import os
 import threading
 import time
+import secrets
 import traceback
+import urllib.parse
 from typing import Dict, List
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import (Depends, FastAPI, File, HTTPException, Request, Response,
+                     UploadFile)
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -49,7 +54,17 @@ app = FastAPI(title="Pipo AI")
 
 # ── 鉴权 ──────────────────────────────────────────────────
 def current_user(request: Request) -> Dict:
-    u = store.user_by_token(request.cookies.get(COOKIE, ""))
+    """浏览器走 cookie，外部集成走 Bearer —— 同一个 token，两种取法。
+
+    GPT Actions 和远程 MCP 连接器都发不了 cookie（不是浏览器），
+    只支持 Authorization 头。不加这条，助手那边根本连不上。
+    """
+    tok = request.cookies.get(COOKIE, "")
+    if not tok:
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            tok = auth[7:].strip()
+    u = store.user_by_token(tok)
     if not u:
         raise HTTPException(401, "未登录")
     return u
@@ -480,6 +495,211 @@ def storage(u: Dict = Depends(current_user)):
                          if os.path.exists(os.path.join(root, f)))
     return {"out_mb": round(total / (1 << 20), 1), "cap_gb": MAX_OUT_GB,
             "keep_days": KEEP_DAYS, "max_upload_mb": MAX_UPLOAD_MB}
+
+
+# ── OAuth（MCP 连接器用）──────────────────────────────────
+# 为什么要这个：远程连接器不能让用户手工粘 token —— 又难用又容易泄露。
+# MCP 规范里的做法是助手把用户弹到**我们的**授权页，同意后 token 自动回传。
+#
+# 注意：这不是「用 ChatGPT/Claude 账号登录」—— 两家都没有面向第三方的
+# 公开身份服务。身份始终是我们自己的（邀请码），助手只负责跑授权流程。
+# 对用户来说效果一样：点一下同意，全程不碰 token。
+@app.get("/.well-known/oauth-protected-resource")
+@app.get("/.well-known/oauth-protected-resource/mcp")
+def oauth_prm(request: Request):
+    base = str(request.base_url).rstrip("/")
+    return {"resource": base + "/mcp", "authorization_servers": [base]}
+
+
+@app.get("/.well-known/oauth-authorization-server")
+def oauth_meta(request: Request):
+    base = str(request.base_url).rstrip("/")
+    return {
+        "issuer": base,
+        "authorization_endpoint": base + "/oauth/authorize",
+        "token_endpoint": base + "/oauth/token",
+        "registration_endpoint": base + "/oauth/register",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+    }
+
+
+@app.post("/oauth/register")
+async def oauth_register(request: Request):
+    """动态客户端注册（RFC 7591）。MCP 客户端会自己来注册，
+    我们不做审核 —— 真正的门槛是后面那一步用户必须输入邀请码。"""
+    body = await request.json()
+    return JSONResponse({
+        "client_id": "mcp-" + secrets.token_hex(8),
+        "client_name": body.get("client_name", "MCP Client"),
+        "redirect_uris": body.get("redirect_uris", []),
+        "token_endpoint_auth_method": "none",
+        "grant_types": ["authorization_code"],
+        "response_types": ["code"],
+    }, status_code=201)
+
+
+@app.get("/oauth/authorize")
+def oauth_authorize(request: Request, client_id: str = "", redirect_uri: str = "",
+                    state: str = "", code_challenge: str = "",
+                    code_challenge_method: str = "S256",
+                    scope: str = "", response_type: str = "code"):
+    if code_challenge_method != "S256" or not code_challenge:
+        raise HTTPException(400, "需要 PKCE (S256)")
+    # 参数原样留在 URL 里，页面自己 location.search 读 —— 不用绕 header
+    return FileResponse(os.path.join(ROOT, "web", "authorize.html"))
+
+
+@app.post("/oauth/approve")
+async def oauth_approve(request: Request):
+    """用户在授权页点「同意」。身份来自邀请码或已有 cookie。"""
+    b = await request.json()
+    tok = b.get("token") or request.cookies.get(COOKIE, "")
+    u = store.user_by_token(tok)
+    if not u:
+        raise HTTPException(401, "邀请码无效")
+    ru = b.get("redirect_uri") or ""
+    if not ru.startswith(("http://localhost", "http://127.0.0.1", "https://")):
+        raise HTTPException(400, "回调地址不合法")
+    code = store.put_code(u["id"], b.get("client_id", ""), ru,
+                          b.get("code_challenge", ""))
+    sep = "&" if "?" in ru else "?"
+    q = {"code": code}
+    if b.get("state"):
+        q["state"] = b["state"]
+    return {"redirect": ru + sep + urllib.parse.urlencode(q)}
+
+
+@app.post("/oauth/token")
+async def oauth_token(request: Request):
+    form = await request.form()
+    if form.get("grant_type") != "authorization_code":
+        raise HTTPException(400, "unsupported_grant_type")
+    rec = store.take_code(form.get("code") or "")
+    if not rec:
+        raise HTTPException(400, "授权码无效或已过期")
+    # PKCE 校验：没有它，截获授权码的人就能换到 token
+    verifier = form.get("code_verifier") or ""
+    digest = hashlib.sha256(verifier.encode()).digest()
+    if base64.urlsafe_b64encode(digest).rstrip(b"=").decode() != rec["challenge"]:
+        raise HTTPException(400, "PKCE 校验失败")
+    u = next((x for x in store.list_users() if x["id"] == rec["user_id"]), None)
+    if not u:
+        raise HTTPException(400, "用户不存在")
+    return {"access_token": u["token"], "token_type": "Bearer",
+            "scope": "pipo", "expires_in": 90 * 86400}
+
+
+# ── MCP over HTTP ─────────────────────────────────────────
+# 远程连接器（claude.ai、ChatGPT）用 HTTP 传输，用户粘个 URL 就能加，
+# 不用装 Python 也不用改配置文件。mcp_server.py 那个 stdio 版只覆盖
+# Claude Desktop / Claude Code 这类本地场景，两个都要留。
+MCP_TOOLS = [
+    {"name": "pipo_upload_link",
+     "description": ("当用户想剪一段本地/手机里的录像时调用。助手无法接收几百 MB 的"
+                     "视频文件，所以返回一个已带登录的上传链接。把 url 和 instructions "
+                     "原样告诉用户，提示传完回来说一声，然后用 pipo_list_videos 取新视频。"),
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "pipo_list_videos",
+     "description": "列出当前用户已上传的乒乓球训练录像，返回 id / 名称 / 时长。",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "pipo_add_video",
+     "description": "按公开 http/https 直链添加一段录像，返回 video_id。传不了本地文件。",
+     "inputSchema": {"type": "object",
+                     "properties": {"url": {"type": "string"},
+                                    "name": {"type": "string"}},
+                     "required": ["url"]}},
+    {"name": "pipo_make_highlight",
+     "description": ("生成集锦并返回下载链接，通常十几秒到一分钟。theme 可选："
+                     "auto 自动选题、best 训练集锦、longest 最长对拉、kill 最帅击球、"
+                     "power 最重扣杀、trim 完整版（只剪等待保留所有球）、records 精彩瞬间。"),
+     "inputSchema": {"type": "object",
+                     "properties": {"video_id": {"type": "string"},
+                                    "theme": {"type": "string", "default": "auto"},
+                                    "top": {"type": "integer", "default": 10}},
+                     "required": ["video_id"]}},
+]
+
+
+def _mcp_dispatch(name: str, args: Dict, u: Dict, base: str) -> Dict:
+    if name == "pipo_upload_link":
+        return {"url": "%s/enter?t=%s" % (base, u["token"]),
+                "instructions": ("点开链接（已带登录，无需注册），把训练录像拖进左侧"
+                                 "或点「选择文件」。支持 mp4/mov，单个最大 %d MB。"
+                                 "传完回来说一声，我接着帮你剪。" % MAX_UPLOAD_MB)}
+    if name == "pipo_list_videos":
+        return {"videos": videos(u)}
+    if name == "pipo_add_video":
+        return ingest(Ingest(url=args["url"], name=args.get("name", "")), u)
+    if name == "pipo_make_highlight":
+        jid = store.create_job(u["id"], args["video_id"])
+        v = store.get_video(u["id"], args["video_id"])
+        if not v:
+            raise HTTPException(404, "视频不存在")
+        # 同步跑：MCP 调用方在等返回，异步反而要它自己轮询。
+        # 一小时视频约 48 秒，在助手可接受的等待范围内。
+        _run(jid, u["id"], v["path"],
+             Job(video=args["video_id"], themes=[args.get("theme", "auto")],
+                 top=int(args.get("top", 10))))
+        j = store.get_job(u["id"], jid)
+        if j["state"] != "done":
+            raise HTTPException(500, j.get("error") or "任务失败")
+        out = [{"theme": r["theme"], "name": r["name"], "clips": r["clips"],
+                "seconds": r["seconds"], "url": base + r["url"]}
+               for r in j.get("results", []) if not r.get("empty")]
+        return {"results": out, "stats": j.get("stats", {})}
+    raise HTTPException(400, "未知工具: %s" % name)
+
+
+@app.post("/mcp")
+async def mcp(request: Request):
+    # 401 必须带 WWW-Authenticate 指向资源元数据，客户端才知道去哪儿授权。
+    # 少了这个头，claude.ai 只会报「连接失败」而不会发起 OAuth。
+    try:
+        u = current_user(request)
+    except HTTPException:
+        base = str(request.base_url).rstrip("/")
+        return JSONResponse(
+            {"error": "unauthorized"}, status_code=401,
+            headers={"WWW-Authenticate":
+                     'Bearer resource_metadata="%s/.well-known/'
+                     'oauth-protected-resource"' % base})
+    return await _mcp_body(request, u)
+
+
+async def _mcp_body(request: Request, u: Dict):
+    """MCP Streamable HTTP 端点。用户在 claude.ai / ChatGPT 里
+    粘贴 https://域名/mcp 并填 token 即可，无需本地安装。"""
+    msg = await request.json()
+    mid, method = msg.get("id"), msg.get("method")
+    base = str(request.base_url).rstrip("/")
+
+    if method == "initialize":
+        r = {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
+             "serverInfo": {"name": "pipo-ai", "version": "0.1.0"}}
+    elif method == "tools/list":
+        r = {"tools": MCP_TOOLS}
+    elif method == "tools/call":
+        p = msg.get("params", {})
+        try:
+            res = _mcp_dispatch(p.get("name", ""), p.get("arguments") or {}, u, base)
+            r = {"content": [{"type": "text",
+                              "text": json.dumps(res, ensure_ascii=False)}]}
+        except HTTPException as e:
+            r = {"content": [{"type": "text", "text": "出错：%s" % e.detail}],
+                 "isError": True}
+        except Exception as e:
+            traceback.print_exc()
+            r = {"content": [{"type": "text", "text": "出错：%s" % e}],
+                 "isError": True}
+    elif method and method.startswith("notifications/"):
+        return Response(status_code=202)          # 通知无需回复
+    else:
+        return JSONResponse({"jsonrpc": "2.0", "id": mid,
+                             "error": {"code": -32601, "message": "method not found"}})
+    return JSONResponse({"jsonrpc": "2.0", "id": mid, "result": r})
 
 
 # ── 清理 ──────────────────────────────────────────────────
