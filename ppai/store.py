@@ -54,6 +54,14 @@ def conn() -> sqlite3.Connection:
         c.execute("PRAGMA journal_mode=WAL")   # 读写并发：任务线程写时页面仍可读
         c.execute("PRAGMA foreign_keys=ON")
         c.executescript(SCHEMA)
+        # SCHEMA 里是 CREATE TABLE IF NOT EXISTS，加字段不会作用到已有的库，
+        # 所以新列要单独 ALTER。重复执行会报 duplicate column，忽略即可。
+        for tbl, col, decl in (("videos", "shot_at", "REAL"),):
+            try:
+                c.execute("ALTER TABLE %s ADD COLUMN %s %s" % (tbl, col, decl))
+                c.commit()
+            except sqlite3.OperationalError:
+                pass
         _local.conn = c
     return c
 
@@ -130,12 +138,19 @@ def add_video(user_id: str, meta: Dict) -> Dict:
         return dict(old)
     vid = secrets.token_hex(8)
     c.execute("""INSERT INTO videos(id,user_id,path,name,fp,duration,width,height,
-                 quality,note,note_en,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 quality,note,note_en,created,shot_at)
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
               (vid, user_id, meta["path"], meta["name"], meta["fp"], meta["duration"],
                meta["width"], meta["height"], meta["quality"], meta.get("note", ""),
-               meta.get("note_en", ""), time.time()))
+               meta.get("note_en", ""), time.time(), meta.get("shot_at")))
     c.commit()
     return dict(c.execute("SELECT * FROM videos WHERE id=?", (vid,)).fetchone())
+
+
+def set_shot_at(vid: str, ts: float) -> None:
+    c = conn()
+    c.execute("UPDATE videos SET shot_at=? WHERE id=?", (ts, vid))
+    c.commit()
 
 
 def list_videos(user_id: str) -> List[Dict]:

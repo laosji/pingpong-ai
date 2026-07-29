@@ -18,6 +18,7 @@ import glob
 import hashlib
 import json
 import os
+import subprocess
 import threading
 import time
 import secrets
@@ -110,6 +111,7 @@ class Job(BaseModel):
     videos: List[str] = []     # 多素材：当作一次训练课的若干段，合成一个成片
     themes: List[str] = ["auto"]
     top: int = 10
+    ordered: bool = False      # 客户端已按用户意愿排好序，服务端不要再动
 
     def ids(self) -> List[str]:
         return self.videos or ([self.video] if self.video else [])
@@ -131,6 +133,30 @@ class Feedback(BaseModel):
     start: float
     end: float
     verdict: str = "not_playing"
+
+
+def shot_time(path: str) -> float:
+    """拍摄时间，用于把多段素材按时间顺序接起来。
+
+    优先容器里的 creation_time（手机直出的录像通常有），没有就退回文件 mtime。
+    **mtime 不等于拍摄时间** —— 复制、下载、转码都会重置它。但同一批素材的
+    相对先后通常还在，而错序的成片比「顺序可能不准」更糟。
+    """
+    try:
+        p = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format_tags=creation_time",
+             "-of", "default=nw=1:nk=1", path],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+        raw = p.stdout.decode().strip()
+        if raw:
+            from datetime import datetime
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        pass
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
 
 
 def _fingerprint(path: str) -> str:
@@ -163,6 +189,12 @@ def _run(jid: str, uid: str, video_paths: List[str], req: Job) -> None:
         hcfg = dict(cfg["highlight"])
         hcfg["top_n"] = req.top
         multi = len(video_paths) > 1
+        if multi and not req.ordered:
+            # 默认按拍摄时间接续，而不是按点选顺序 —— 多选时点击顺序是随意的，
+            # 而成片的时间线不该是随意的。
+            # 网页端会自己排好并置 ordered=True（用户可以手动调整），
+            # 这时服务端不能再排一次，否则用户的调整会被悄悄覆盖。
+            video_paths = sorted(video_paths, key=shot_time)
         rc = cfg.get("rerank", {})
         model = (rerank.load(rc.get("model", rerank.MODEL_PATH))
                  if rc.get("enabled") else None)
@@ -198,6 +230,9 @@ def _run(jid: str, uid: str, video_paths: List[str], req: Job) -> None:
         summary = stats.summarize(pool, hits_all, amps_all, total, vk,
                                   busy_gap=hcfg.get("busy_gap_s", 0.3))
         summary["source_count"] = len(video_paths)
+        # 把实际接续顺序报出来 —— 排序规则（容器时间 > mtime）用户看不见，
+        # 不给出结果就没法判断顺序对不对。
+        summary["sources"] = [os.path.basename(p) for p in video_paths]
 
         kinds = req.themes
         if kinds == ["auto"]:
@@ -262,9 +297,15 @@ def videos(u: Dict = Depends(current_user)):
     for v in store.list_videos(u["id"]):
         if not os.path.exists(v["path"]):     # 文件被清理掉了就不列
             continue
-        out.append({k: v[k] for k in
-                    ("id", "name", "duration", "width", "height", "quality",
-                     "note", "note_en")})
+        # 这一列是后加的，老记录是空的 —— 首次列出时补齐，之后就不用再探了
+        if not v.get("shot_at"):
+            v["shot_at"] = shot_time(v["path"])
+            store.set_shot_at(v["id"], v["shot_at"])
+        d = {k: v[k] for k in
+             ("id", "name", "duration", "width", "height", "quality",
+              "note", "note_en")}
+        d["shot_at"] = v["shot_at"]
+        out.append(d)
     return out
 
 
@@ -530,6 +571,32 @@ def source(id: str, u: Dict = Depends(current_user)):
     if not v or not os.path.exists(v["path"]):
         raise HTTPException(404)
     return FileResponse(v["path"])
+
+
+@app.get("/api/thumb")
+def thumb(id: str, u: Dict = Depends(current_user)):
+    """缩略图。生成一次存盘复用 —— 每次列表都抽帧的话，
+    五个视频就是五次 ffmpeg，侧栏会肉眼可见地卡。
+
+    取 8% 处而不是首帧：录像开头常常是走向球台、镜头还在晃，
+    首帧多半是黑的或者糊的，作为封面认不出是哪一段。
+    """
+    v = store.get_video(u["id"], id)
+    if not v or not os.path.exists(v["path"]):
+        raise HTTPException(404)
+    d = user_dir(os.path.join(ROOT, "thumbs"), u["id"])
+    dst = os.path.join(d, "%s.jpg" % id)
+    if not os.path.exists(dst):
+        at = max(0.5, (v["duration"] or 10) * 0.08)
+        p = subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-ss", "%.2f" % at, "-i", v["path"],
+             "-frames:v", "1", "-vf", "scale=160:-2", "-q:v", "5", dst],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        if p.returncode != 0 or not os.path.exists(dst):
+            raise HTTPException(500, "缩略图生成失败")
+    # 缩略图不会变（视频是不可变的），让浏览器长期缓存，别每次刷新都回源
+    return FileResponse(dst, media_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=604800"})
 
 
 @app.get("/api/storage")

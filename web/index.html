@@ -58,15 +58,19 @@ button,input,label{font-family:inherit}
 .stage{max-width:760px;margin:0 auto;padding:32px 32px 64px}
 .eyebrow{font-size:11px;font-weight:660;letter-spacing:.06em;color:var(--ink-3)}
 
-.item{display:block;width:100%;text-align:left;border:1px solid transparent;
-  background:transparent;color:inherit;font:inherit;
-  padding:10px 12px;border-radius:var(--r);cursor:pointer;margin-bottom:2px;
+.item{display:flex;align-items:center;gap:10px;width:100%;text-align:left;
+  border:1px solid transparent;background:transparent;color:inherit;font:inherit;
+  padding:8px 10px;border-radius:var(--r);cursor:pointer;margin-bottom:2px;
   transition:background .12s ease,border-color .12s ease}
 .item:hover{background:var(--surface-2)}
 .item[aria-selected="true"]{background:var(--accent-wash);border-color:var(--accent-line)}
-.item .t{font-size:13px;line-height:1.45;word-break:break-all;
-  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.item .s{font-size:11.5px;color:var(--ink-3);margin-top:3px;
+/* 缩略图固定 4:3 框：素材有横有竖，不固定框列表左缘会参差不齐 */
+.item .th{width:52px;height:39px;flex:0 0 auto;object-fit:cover;border-radius:6px;
+  background:var(--line);display:block}
+.item .meta{min-width:0;flex:1}
+.item .t{display:-webkit-box;font-size:13px;line-height:1.4;word-break:break-all;
+  -webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.item .s{display:block;font-size:11.5px;color:var(--ink-3);margin-top:2px;
   font-variant-numeric:tabular-nums}
 
 .up{border:1px solid var(--line-2);border-radius:999px;padding:5px 12px;
@@ -84,8 +88,8 @@ button,input,label{font-family:inherit}
    但又必须看得出是「按下」状态 —— 否则用户不知道当前点击会叠加还是替换。 */
 .up[aria-pressed="true"]{background:var(--accent-wash);border-color:var(--accent);
   color:var(--accent);font-weight:560}
-.item .ck{float:right;width:15px;height:15px;border:1.5px solid var(--line-2);
-  border-radius:4px;margin-left:8px;display:grid;place-items:center;
+.item .ck{width:16px;height:16px;border:1.5px solid var(--line-2);
+  border-radius:4px;display:grid;place-items:center;
   font-size:10px;line-height:1;color:transparent;flex:0 0 auto}
 .item[aria-selected="true"] .ck{border-color:var(--accent);background:var(--accent);
   color:var(--on-accent)}
@@ -126,6 +130,23 @@ video{max-width:100%;display:block}
 .chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);
   color:var(--on-accent);font-weight:560}
 .desc{color:var(--ink-2);font-size:13px;margin-top:14px;min-height:1.6em}
+
+/* 素材顺序：横向缩略图条，拖动改顺序。
+   给了画面才谈得上「排序」—— 只有文件名的话用户是在猜。 */
+.ord{display:flex;gap:10px;overflow-x:auto;padding:2px 0 6px;scrollbar-width:thin}
+.ord-i{flex:0 0 auto;width:108px;cursor:grab;position:relative;
+  border:1px solid var(--line);border-radius:var(--r);overflow:hidden;
+  background:var(--surface-2);transition:border-color .12s ease,opacity .12s ease}
+.ord-i:active{cursor:grabbing}
+.ord-i.drag{opacity:.35}
+.ord-i.over{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-wash)}
+.ord-i img{width:100%;height:76px;object-fit:cover;display:block;background:var(--line)}
+.ord-i .n{position:absolute;top:5px;left:5px;min-width:18px;height:18px;padding:0 5px;
+  border-radius:9px;background:var(--accent);color:var(--on-accent);
+  font-size:11px;font-weight:640;display:grid;place-items:center;
+  font-variant-numeric:tabular-nums}
+.ord-i .nm{display:block;padding:5px 7px 6px;font-size:11px;color:var(--ink-3);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 .btn{border:0;border-radius:var(--r);padding:10px 22px;font-size:14px;font-weight:560;
   cursor:pointer;background:var(--accent);color:var(--on-accent);
@@ -229,6 +250,8 @@ const I18N = {
        blank:'选一段录像开始', blankSub:'也可以把视频文件拖到左侧',
        multiHint:'点「多选素材」可挑多段一起剪', multiSel:'已选 %d 段素材 · 合计 %s',
        selMode:'多选素材', selDone:'完成 (%d)', multiOn:'点条目加选／取消，选好后点「完成」',
+       order:'素材顺序', orderAuto:'按拍摄时间排列 · 可拖动调整',
+       orderManual:'已手动调整 · 可继续拖动',
        duration:'时长', resolution:'分辨率', quality:'质量评分',
        theme:'剪辑主题', go:'开始剪辑', submitting:'提交中', failed:'剪辑失败',
        auto:'自动', autoDesc:'去掉捡球和等待，一个球都不漏（约压到六成）',
@@ -249,6 +272,8 @@ const I18N = {
        blank:'Pick a video to start', blankSub:'or drop a file on the left',
        multiHint:'Use “Multi-select” to combine several clips', multiSel:'%d clips selected · %s total',
        selMode:'Multi-select', selDone:'Done (%d)', multiOn:'Tap items to add or remove, then “Done”',
+       order:'Clip order', orderAuto:'By capture time · drag to reorder',
+       orderManual:'Manually ordered · drag to adjust',
        duration:'Length', resolution:'Resolution', quality:'Quality',
        theme:'Edit style', go:'Create', submitting:'Submitting', failed:'Failed',
        auto:'Auto', autoDesc:'Cuts out ball retrieval and waiting — every rally kept (about 60% of the original)',
@@ -287,7 +312,7 @@ const mmss = s => { const t = Math.round(s);
   return `${Math.floor(t/60)}:${String(t%60).padStart(2,'0')}`; };
 const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-let videos=[], themes=[], cur=null, sel=new Set(), pickTheme='auto', poll=null;
+let videos=[], themes=[], cur=null, sel=[], pickTheme='auto', poll=null;
 let multiMode=false;
 
 async function boot(){
@@ -310,17 +335,52 @@ function drawList(){
   }
   videos.forEach((v,i)=>{
     const b = el('button','item',
-      `<div class="t">${esc(v.name)}</div>
-       <div class="s">${mmss(v.duration)} · ${v.width}×${v.height}</div>`);
-    if(multiMode) b.querySelector('.t').insertAdjacentHTML('afterbegin',
-      '<span class="ck">✓</span>');
+      `<img class="th" src="/api/thumb?id=${encodeURIComponent(v.id)}"
+            alt="" loading="lazy" onerror="this.style.visibility='hidden'">
+       <span class="meta">
+         <span class="t">${esc(v.name)}</span>
+         <span class="s">${mmss(v.duration)} · ${v.width}×${v.height}</span>
+       </span>
+       ${multiMode?'<span class="ck">✓</span>':''}`);
     b.setAttribute('role','option');
-    b.setAttribute('aria-selected', sel.has(v.id) ? 'true':'false');
+    b.setAttribute('aria-selected', sel.includes(v.id) ? 'true':'false');
     // 多选模式下点击即切换；平时点击=只选这个，保持单选手感 ——
     // 反过来做会让「换一个视频」变成先取消再选的两步。
     // ⌘/Ctrl/Shift 作为熟手快捷方式一直有效。
     b.onclick = e => choose(i, multiMode||e.metaKey||e.ctrlKey||e.shiftKey);
     L.appendChild(b);
+  });
+}
+
+// 素材顺序条：拖动改接续顺序。用 HTML5 drag 而不是自己算指针位移 ——
+// 后者要处理滚动、触摸、边界，代码量翻几倍而收益只是动画更顺。
+function drawOrder(){
+  const box = $('#ord');
+  if(!box) return;
+  box.innerHTML = '';
+  picked().forEach((v, i) => {
+    const d = el('div','ord-i',
+      `<span class="n">${i+1}</span>
+       <img src="/api/thumb?id=${encodeURIComponent(v.id)}" alt=""
+            onerror="this.style.visibility='hidden'">
+       <span class="nm">${esc(v.name)}</span>`);
+    d.draggable = true;
+    d.dataset.id = v.id;
+    d.ondragstart = e => { e.dataTransfer.effectAllowed='move';
+      e.dataTransfer.setData('text/plain', v.id); d.classList.add('drag'); };
+    d.ondragend   = () => d.classList.remove('drag');
+    d.ondragover  = e => { e.preventDefault(); d.classList.add('over'); };
+    d.ondragleave = () => d.classList.remove('over');
+    d.ondrop = e => {
+      e.preventDefault(); d.classList.remove('over');
+      const from = sel.indexOf(e.dataTransfer.getData('text/plain'));
+      const to   = sel.indexOf(v.id);
+      if(from < 0 || to < 0 || from === to) return;
+      sel.splice(to, 0, sel.splice(from, 1)[0]);
+      reordered = true;      // 用户表过态了，之后加选不再自动重排
+      draw();
+    };
+    box.appendChild(d);
   });
 }
 
@@ -332,21 +392,32 @@ function blank(ic,msg,sub){
 function choose(i, add){
   const v = videos[i];
   if(add){
-    sel.has(v.id) ? sel.delete(v.id) : sel.add(v.id);
-    if(!sel.size) sel.add(v.id);       // 不允许清空到零，否则没东西可剪
+    if(sel.includes(v.id)){
+      if(sel.length>1) sel = sel.filter(x=>x!==v.id);   // 不允许清空到零
+    } else {
+      sel.push(v.id); sortSel();      // 新加的按拍摄时间落到该在的位置
+    }
   } else {
-    sel = new Set([v.id]);
+    sel = [v.id];
   }
   // cur 是「面板上显示哪一段」：加选时保持不动，单选时跟着走。
-  if(!cur || !sel.has(cur.id)) cur = picked()[0];
+  if(!cur || !sel.includes(cur.id)) cur = picked()[0];
   [...$('#list').children].forEach((e,j)=>
-    e.setAttribute('aria-selected', sel.has(videos[j].id)?'true':'false'));
+    e.setAttribute('aria-selected', sel.includes(videos[j].id)?'true':'false'));
   syncMulti();
   draw();
 }
 
-// sel 存 id 不存对象：上传后 videos 会整个重建，存引用会让选中态凭空丢失。
-function picked(){ return videos.filter(v=>sel.has(v.id)); }
+// sel 是**有序**的 id 数组：成片的接续顺序就是它，所以不能用 Set。
+// 存 id 不存对象 —— 上传后 videos 会整个重建，存引用会让选中态凭空丢失。
+function picked(){ return sel.map(id=>videos.find(v=>v.id===id)).filter(Boolean); }
+// 默认按拍摄时间；用户拖动调整后不再自动重排（reordered 置位）。
+let reordered=false;
+function sortSel(){
+  if(reordered) return;
+  const at=id=>(videos.find(v=>v.id===id)||{}).shot_at||0;
+  sel.sort((a,b)=>at(a)-at(b));
+}
 
 // 「多选素材」开关：在已导入的素材里挑几段一起剪。
 // 做成显式模式而不是只靠 ⌘ —— 修饰键是隐藏交互，没人会去猜。
@@ -388,6 +459,12 @@ function draw(){
         ? `<div class="card-pad" style="padding-top:16px"><div class="alert">
              <span>⚠</span><span>${esc(LANG==='en'?(v.note_en||v.note):v.note)}</span></div></div>` : ''}
     </div>
+    ${picked().length>1 ? `
+    <div class="card">
+      <div class="card-hd"><h3>${t('order')}</h3>
+        <span class="who">${reordered?t('orderManual'):t('orderAuto')}</span></div>
+      <div class="card-pad"><div class="ord" id="ord"></div></div>
+    </div>` : ''}
     <div class="card">
       <div class="card-hd"><h3>${t('theme')}</h3>${picked().length>1
         ? `<span class="who">${t('multiSel')
@@ -416,6 +493,7 @@ function draw(){
   const fade=()=>C.classList.toggle('more',
     C.scrollWidth - C.scrollLeft - C.clientWidth > 4);
   C.onscroll=fade; new ResizeObserver(fade).observe(C); fade();
+  drawOrder();
   $('#desc').textContent = themeDesc(all.find(x=>x.id===pickTheme)||{}) || '';
   $('#go').onclick = start;
 }
@@ -427,7 +505,7 @@ async function start(){
   let r;
   try{
     r = await fetch('/api/jobs',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({videos:picked().map(v=>v.id),
+      body:JSON.stringify({videos:picked().map(v=>v.id), ordered:true,
                            themes:[pickTheme], top:10})}).then(x=>x.json());
   }catch(e){ return fail(t('failed')); }
   clearInterval(poll);
