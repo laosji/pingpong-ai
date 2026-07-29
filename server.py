@@ -285,6 +285,8 @@ def _analyze_inner(video_paths, cfg, hcfg, step, pct, key, ev) -> Dict:
                               busy_gap=hcfg.get("busy_gap_s", 0.3))
     summary["source_count"] = len(video_paths)
     summary["sources"] = [os.path.basename(p) for p in video_paths]
+    # 完整版的副标题要靠它解释「为什么比有效打球长得多」
+    summary["trim_pad"] = hcfg.get("trim_pad_s", 0.5)
     res = {"per": per, "pool": pool, "summary": summary, "vk": vk, "total": base,
            "canvas": render.pick_canvas(
                video_paths, {p["path"]: p["duration"] for p in per})}

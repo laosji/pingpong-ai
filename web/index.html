@@ -278,7 +278,7 @@ const I18N = {
        starHint:'★ 是回合最长的几段',
        starTitle:n=>`这个回合有 ${n} 拍`,
        spotFrom:(n,d)=>`${n} 个回合，从 ${d} 的素材里挑出来的`,
-       trimCut:d=>`剪掉了 ${d} 的捡球和等待`,
+       trimKeep:(n,p)=>`保留所有 ${n} 段打球，每段前后各留 ${p} 秒`,
        order:'素材顺序', orderAuto:'按拍摄时间排列 · 可拖动调整',
        orderManual:'已手动调整 · 可继续拖动',
        duration:'时长', resolution:'分辨率', quality:'质量评分',
@@ -307,7 +307,7 @@ const I18N = {
        starHint:'★ marks the longest rallies',
        starTitle:n=>`${n} shots in this rally`,
        spotFrom:(n,d)=>`${n} rallies, picked from ${d} of footage`,
-       trimCut:d=>`${d} of idle time removed`,
+       trimKeep:(n,p)=>`all ${n} segments kept, ${p}s of lead-in and tail on each`,
        order:'Clip order', orderAuto:'By capture time · drag to reorder',
        orderManual:'Manually ordered · drag to adjust',
        duration:'Length', resolution:'Resolution', quality:'Quality',
@@ -655,7 +655,6 @@ function done(j){
   const ordered = pair
     ? [...all.filter(r=>r.theme==='spot'), ...all.filter(r=>r.theme!=='spot')]
     : all;
-  const trimSec = (all.find(r=>r.theme==='trim')||{}).seconds;
 
   ordered.forEach((r)=>{
     const idx = all.indexOf(r);
@@ -669,8 +668,11 @@ function done(j){
     const rel = pair && r.theme==='spot' && s.duration
       ? `<div class="card-pad" style="padding:12px 20px 0"><div class="note">
            ${t('spotFrom', r.clips, mmss(s.duration))}</div></div>` : '';
-    const sub = fold && s.duration!=null && trimSec!=null
-      ? ` · ${t('trimCut', mmss(Math.max(0, s.duration - trimSec)))}` : '';
+    // 原来写「剪掉了 X 的捡球和等待」，和旁边的「有效打球 4 分钟」差 3.7 倍，
+    // 看起来像剪错了。两个数各自都对，只是口径不同（有效打球用 0.3 秒的
+    // 严格间隔，完整版每个球前后各留 0.5 秒且押不漏球）。
+    // 所以副标题改成解释完整版本身是什么，不再报一个会引起对比的差值。
+    const sub = fold ? ` · ${t('trimKeep', r.clips, s.trim_pad ?? 0.5)}` : '';
     h += `<div class="card${fold?' fold':''}"${fold?' data-open="0"':''}>
       <div class="card-hd"${fold?' data-fold="1"':''}>
         <h3>${esc(LANG==='en'?(r.name_en||r.name):r.name)} · ${
