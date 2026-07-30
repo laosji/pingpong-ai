@@ -276,7 +276,7 @@ const I18N = {
        estOne:(n,d)=>`预计 ${n} 段 / ${d}`,
        estPair:(a,b,c,d)=>`预计 精华 ${a} 段 / ${b}，完整版 ${c} 段 / ${d}`,
        starHint:'★ 是回合最长的几段',
-       starTitle:n=>`这个回合有 ${n} 拍`,
+       starTitle:()=>`来回最多的几段之一`,
        spotFrom:(n,d)=>`${n} 个回合，从 ${d} 的素材里挑出来的`,
        trimKeep:(n,p)=>`保留所有 ${n} 段打球，每段前后各留 ${p} 秒`,
        order:'素材顺序', orderAuto:'按拍摄时间排列 · 可拖动调整',
@@ -305,7 +305,7 @@ const I18N = {
        estOne:(n,d)=>`about ${n} clips / ${d}`,
        estPair:(a,b,c,d)=>`about ${a} clips / ${b} highlights, ${c} clips / ${d} full`,
        starHint:'★ marks the longest rallies',
-       starTitle:n=>`${n} shots in this rally`,
+       starTitle:()=>`one of the longest exchanges`,
        spotFrom:(n,d)=>`${n} rallies, picked from ${d} of footage`,
        trimKeep:(n,p)=>`all ${n} segments kept, ${p}s of lead-in and tail on each`,
        order:'Clip order', orderAuto:'By capture time · drag to reorder',
@@ -691,7 +691,7 @@ function done(j){
           r.segments.some(x=>x.star)?' · '+t('starHint'):''}</div>
         ${r.segments.map((x,i)=>
         `<span class="seg${x.star?' star':''}" data-i="${i}" data-sid="${x.id}"
-               ${x.star?`title="${t('starTitle',x.hit_count)}"`:''}>
+               ${x.star?`title="${t('starTitle')}"`:''}>
            <button data-off="${x.offset}" data-idx="${idx}">${mmss(x.start)}–${mmss(x.end)}</button>
            <a href="${x.url}" download title="${t('segTitle')}">↓</a>
            <a class="rej" href="#" data-s="${x.start}" data-e="${x.end}"
