@@ -105,6 +105,10 @@ button,input,label{font-family:inherit}
 .card-hd h3{margin:0;font-size:14px;font-weight:620;letter-spacing:-.005em}
 
 .player{background:#000;display:grid;place-items:center;min-height:180px}
+/* 连播时告诉用户现在是第几段 —— 否则画面一换会以为是 bug */
+.nowplay{padding:9px 20px;font-size:12.5px;color:var(--ink-3);
+  background:var(--surface-2);border-top:1px solid var(--line);
+  font-variant-numeric:tabular-nums}
 video{max-width:100%;display:block}
 
 .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));
@@ -141,6 +145,8 @@ video{max-width:100%;display:block}
 .ord-i:active{cursor:grabbing}
 .ord-i.drag{opacity:.35}
 .ord-i.over{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-wash)}
+.ord-i.now{border-color:var(--accent);background:var(--accent-wash)}
+.ord-i.now .nm{color:var(--accent)}
 .ord-i img{width:100%;height:76px;object-fit:cover;display:block;background:var(--line)}
 .ord-i .n{position:absolute;top:5px;left:5px;min-width:18px;height:18px;padding:0 5px;
   border-radius:9px;background:var(--accent);color:var(--on-accent);
@@ -281,7 +287,8 @@ const I18N = {
        trimKeep:(n,p)=>`保留所有 ${n} 段打球，每段前后各留 ${p} 秒`,
        order:'素材顺序', orderAuto:'按拍摄时间排列 · 可拖动调整',
        orderManual:'已手动调整 · 可继续拖动',
-       duration:'时长', resolution:'分辨率', quality:'质量评分',
+       duration:'时长', durationAll:'合计时长', resolution:'分辨率', quality:'质量评分',
+       nowPlaying:(i,n,name)=>`连续播放 ${i}/${n} · ${name}`,
        theme:'剪辑主题', go:'开始剪辑', submitting:'提交中', failed:'剪辑失败',
        auto:'自动', autoDesc:'一条几十秒的精华当场看，外加一条去掉捡球和等待的完整版存档',
        structure:'结构',
@@ -310,7 +317,8 @@ const I18N = {
        trimKeep:(n,p)=>`all ${n} segments kept, ${p}s of lead-in and tail on each`,
        order:'Clip order', orderAuto:'By capture time · drag to reorder',
        orderManual:'Manually ordered · drag to adjust',
-       duration:'Length', resolution:'Resolution', quality:'Quality',
+       duration:'Length', durationAll:'Total', resolution:'Resolution', quality:'Quality',
+       nowPlaying:(i,n,name)=>`Playing ${i} of ${n} · ${name}`,
        theme:'Edit style', go:'Create', submitting:'Submitting', failed:'Failed',
        auto:'Auto', autoDesc:'A short highlights reel to watch now, plus a full version with idle time removed',
        structure:'Structure',
@@ -394,6 +402,34 @@ function drawList(){
 
 function selKey(){ return picked().map(v=>v.id).join(','); }
 
+// 多选时把预览播成一条连续的片子。<video> 没有原生播放列表，
+// 所以在 ended 时换 src 再 play() —— 切换会有一瞬黑屏，但比让用户
+// 自己一个个点开看要好。单选时这个函数什么都不做。
+let plIdx = 0;              // 连播到第几段（顺序条点击也要能改，所以放外层）
+function playAt(n, autoplay){
+  const P=picked(), vid=$('#stage video'), box=$('#nowplay');
+  if(!vid || !P.length) return;
+  plIdx = Math.max(0, Math.min(n, P.length-1));
+  vid.src = '/source?id=' + encodeURIComponent(P[plIdx].id);
+  vid.load();
+  if(box) box.textContent = t('nowPlaying', plIdx+1, P.length, shotLabel(P[plIdx]));
+  if(autoplay) vid.play().catch(()=>{});     // 自动播放被拦就算了，用户点一下即可
+  drawOrder();                               // 刷新顺序条的「正在播」高亮
+}
+function wirePlaylist(){
+  const P=picked(), vid=$('#stage video');
+  if(!vid || P.length<2) return;
+  // drawOrder 已经在本函数之前跑过了，那时 plIdx 可能还停在上一次选择的位置，
+  // 所以重置之后要再画一次，否则「正在播」高亮会落在错的缩略图上
+  plIdx = 0;
+  drawOrder();
+  const box=$('#nowplay');
+  if(box) box.textContent = t('nowPlaying', 1, P.length, shotLabel(P[0]));
+  // 播完自动接下一段。<video> 没有原生播放列表，只能换 src 再 play()。
+  // 切换会有一瞬黑屏，但比让用户自己一个个点开看要好。
+  vid.onended = () => { if(plIdx < P.length-1) playAt(plIdx+1, true); };
+}
+
 function paintDesc(){
   const box=$('#desc'); if(!box) return;
   const all=[{id:'auto'}, ...themes];
@@ -443,6 +479,9 @@ function drawOrder(){
     d.draggable = true;
     d.title = v.name;
     d.dataset.id = v.id;
+    if(picked().length>1 && i===plIdx) d.classList.add('now');
+    // 有缩略图却不能点是反直觉的 —— 点一下就跳到那一段
+    d.onclick = e => { if(!e.target.closest('.n')) playAt(i, true); };
     d.ondragstart = e => { e.dataTransfer.effectAllowed='move';
       e.dataTransfer.setData('text/plain', v.id); d.classList.add('drag'); };
     d.ondragend   = () => d.classList.remove('drag');
@@ -543,12 +582,18 @@ function player(src, portrait){
 }
 
 function draw(){
-  const v=cur, portrait=v.height>v.width;
+  const P=picked(), multi=P.length>1;
+  // 多选时预览按顺序连续播放，第一段先出画。单选时就是 cur 本身。
+  const v = multi ? P[0] : cur;
+  const portrait=v.height>v.width;
+  const total = P.reduce((a,x)=>a+x.duration, 0);
   $('#stage').innerHTML = `
     <div class="card">
       ${player('/source?id='+v.id, portrait)}
+      ${multi ? `<div class="nowplay" id="nowplay"></div>` : ''}
       <div class="metrics">
-        <div class="metric"><b>${mmss(v.duration)}</b><span>${t('duration')}</span></div>
+        <div class="metric"><b>${mmss(multi?total:v.duration)}</b><span>${
+          multi ? t('durationAll') : t('duration')}</span></div>
         <div class="metric"><b>${v.width}×${v.height}</b><span>${t('resolution')}</span></div>
         <div class="metric"><b>${v.quality}</b><span>${t('quality')}</span></div>
       </div>
@@ -596,6 +641,7 @@ function draw(){
     C.scrollWidth - C.scrollLeft - C.clientWidth > 4);
   C.onscroll=fade; new ResizeObserver(fade).observe(C); fade();
   drawOrder();
+  wirePlaylist();
   paintDesc();
   loadEst();
   $('#go').onclick = start;
