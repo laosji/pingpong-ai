@@ -263,7 +263,8 @@ def _analyze_inner(video_paths, cfg, hcfg, step, pct, key, ev) -> Dict:
         amps = audio.hit_amplitudes(hits, env, fr)
         step("分析画面运动" + tag)
         m_t, m_v = motion.motion_curve(vp, cfg["motion"])
-        rs = highlight.score(highlight.rallies(hits, hcfg, amps), m_t, m_v, hcfg)
+        rs = highlight.score(highlight.rallies_gated(hits, dur_guess, hcfg, amps),
+                             m_t, m_v, hcfg)
         for r in rs:
             r["src"] = vp
         meta = probe(vp)

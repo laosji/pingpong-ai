@@ -22,20 +22,25 @@ import numpy as np
 
 # 发球的四拍间隔模板。规则决定只有发球会连续两次触台
 # （A挥拍 → 落A台 → 落B台 → B挥拍），所以这个模式是发球独有的。
-# 三个数来自 5fa9db9e 的 18 次发球真值（均值 ± 标准差）。
-_SERVE_MU = np.array([0.177, 0.345, 0.234])
-_SERVE_SD = np.array([0.040, 0.109, 0.079])
+# 三个数来自两个视频的 76 次发球真值合并（5fa9db9e 18 次 + 5cf65f 58 次）。
+# 单视频拟合会过紧：5fa9db9e 单独拟出的 sd 是 0.040/0.109/0.079，
+# 拿去测 5cf65f 时阈值 0.85 一个都达不到（曾误判为「模板不泛化」）。
+# 合并后 sd 变宽，两个视频都能触发，而跨视频 AUC 本来就不差：
+#   5cf65f 的模板测 5fa9db9e = 0.856（5fa9db9e 自测 0.922）
+_SERVE_MU = np.array([0.143, 0.290, 0.223])
+_SERVE_SD = np.array([0.045, 0.145, 0.119])
 
 
 def serve_scores(hits: np.ndarray) -> np.ndarray:
     """每个瞬态作为「发球起点」的可信度，0-1，越大越像。
 
-    实测（18 次发球真值，每个只认最近的一个候选）AUC 0.922。
-    试过两个变体，都更差，别再试：
-      * 允许第一拍静音（轻发球触拍声小）→ 0.787。少一个间隔约束后
-        大量非发球模式也能匹配上，放宽得不偿失。
-      * 叠加「前置长静音」→ 0.897。静音单独只有 0.731，且发球前 0.5 秒内
-        常有上一回合的落地弹跳，这个信号没那么干净。
+    实测 AUC：5fa9db9e 0.885 / 5cf65f 0.756（合并模板，每个发球只认最近的候选）。
+    试过两个变体，两个视频上都更差，别再试：
+      * 允许第一拍静音（轻发球触拍声小）→ 0.526 / 0.386。少一个间隔约束后
+        大量非发球模式也能匹配上，放宽得不偿失。5cf65f 确实有 20/58 次发球
+        没检出触拍声，但放宽的代价远大于收益。
+      * 叠加「前置长静音」→ 0.897（5fa9db9e）。静音单独只有 0.731，
+        且发球前 0.5 秒内常有上一回合的落地弹跳，信号不干净。
     """
     n = len(hits)
     out = np.zeros(n)
@@ -128,6 +133,40 @@ def rallies(hits: np.ndarray, cfg: Dict, amps: Optional[np.ndarray] = None) -> L
         })
     return [r for r in out
             if r["end"] - r["start"] >= cfg["min_duration_s"] and r["hits"] >= cfg["min_hits"]]
+
+
+def rallies_gated(hits: np.ndarray, duration: float, cfg: Dict,
+                  amps: Optional[np.ndarray] = None) -> List[Dict]:
+    """分组的入口。两遍：先纯静音分一次判断素材结构，只在「对打」上启用发球边界。
+
+    为什么要门禁：多球训练里教练连续喂球，没有「发球→落自己台面」这个动作，
+    四拍模式在物理上不存在。实测 06a6c98c（多球训练）只检出 1 个发球，
+    强行启用后放宽的兜底静音就把回合合并掉了（长相持 ρ 0.85 -> 0.65）。
+
+    为什么要两遍：video_kind 是**从**分组结果算出来的，拿不到分组就判不了结构。
+    第一遍只用来判结构，代价是多跑一次纯 numpy 的分组，可以忽略。
+
+    实测五个视频的长相持排序（ρ，与真值挥拍数比）：
+        06a6c98c 多球训练  0.85 -> 0.85（门禁挡住，保持现状）
+        dc393956 对打      0.90 -> 0.99
+        5fa9db9e 对打      0.75 -> 0.92
+        5cf65f   对打      0.84 -> 0.87
+        84530a   对打      0.88 -> 0.86
+        平均              0.844 -> 0.906
+    两个有发球真值的视频，回合数也从偏多逼近真值：
+        5fa9db9e  35 -> 15 组（真值 18），IoU 0.287 -> 0.420
+        5cf65f    85 -> 66 组（真值 58），IoU 0.358 -> 0.408
+    """
+    sb = cfg.get("serve_boundary") or {}
+    if not sb.get("enabled"):
+        return rallies(hits, cfg, amps)
+    off = dict(cfg); off["serve_boundary"] = {"enabled": False}
+    first = rallies(hits, off, amps)
+    if not first:
+        return first
+    if video_kind(first, duration, cfg)["kind"] != "dense":
+        return first                     # 多球训练：保持纯静音分组
+    return rallies(hits, cfg, amps)
 
 
 def find_bounce_decay(ts: np.ndarray, cfg: Dict) -> Optional[float]:

@@ -235,7 +235,9 @@ def main(argv=None) -> int:
             meta = probe(path)
             hits, amps = _hits(path, cfg)
             m_t, m_v = motion.motion_curve(path, cfg["motion"])
-            rs = highlight.score(highlight.rallies(hits, hcfg, amps), m_t, m_v, hcfg)
+            rs = highlight.score(
+                highlight.rallies_gated(hits, meta["duration"], hcfg, amps),
+                m_t, m_v, hcfg)
             vk = highlight.video_kind(rs, meta["duration"], hcfg)
             print("  %d 个瞬态 -> %d 个回合 | 结构: %s（空档中位 %.1fs, 忙碌 %.0f%%）"
                   % (len(hits), len(rs),
@@ -294,7 +296,9 @@ def main(argv=None) -> int:
             hits, amps = _hits(path, cfg)
             hcfg = cfg["highlight"]
             m_t, m_v = motion.motion_curve(path, cfg["motion"])
-            rs = highlight.score(highlight.rallies(hits, hcfg, amps), m_t, m_v, hcfg)
+            rs = highlight.score(
+                highlight.rallies_gated(hits, meta["duration"], hcfg, amps),
+                m_t, m_v, hcfg)
             vk = highlight.video_kind(rs, meta["duration"], hcfg)
             s_ = stats.summarize(rs, hits, amps, meta["duration"], vk,
                                  busy_gap=cfg["highlight"].get("busy_gap_s", 0.3))
