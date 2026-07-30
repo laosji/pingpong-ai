@@ -818,7 +818,11 @@ function upload(f, done){
     if(xhr.status===200){
       reset();
       const v = JSON.parse(xhr.responseText);
-      const at = videos.findIndex(x => x.fp && x.fp === v.fp);
+      // 按 id 去重，不按 fp —— /api/videos 不返回 fp（那是服务端内部指纹），
+      // 所以页面加载后所有条目的 x.fp 都是 undefined，原来的判断永远为假，
+      // 重复导入就会往列表里再推一条。服务端已按指纹去重并返回旧记录，
+      // 所以同一个视频拿到的 id 一定相同。
+      const at = videos.findIndex(x => x.id === v.id);
       if(at >= 0){ choose(at, multiMode); drawList();   // 已有同一个视频，直接选中它
         $('#prog').innerHTML =
           '<div class="note" style="padding:0 16px 10px">这个视频已经在列表里了</div>';

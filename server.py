@@ -144,6 +144,20 @@ _OLD_NOTES = ("视频质量良好", "分辨率低于 720p", "帧率低于 25fps"
               "方案假设为横屏固定机位", "无音轨 ——", "时长不足 2 分钟")
 
 
+def _video_out(v: Dict, reused: bool = False) -> Dict:
+    """给前端的视频出参。只出这几个字段 —— path / fp / user_id 是服务端内部信息。
+
+    带 id 就够前端去重了（服务端已按指纹去重并返回旧记录），
+    不用把内部指纹暴露出去。
+    """
+    d = {k: v[k] for k in ("id", "name", "duration", "width", "height",
+                           "quality", "note", "note_en")}
+    d["shot_at"] = v["shot_at"] if "shot_at" in v.keys() else None
+    if reused:
+        d["reused"] = True
+    return d
+
+
 def shot_time(path: str) -> float:
     """拍摄时间，用于把多段素材按时间顺序接起来。
 
@@ -437,11 +451,7 @@ def videos(u: Dict = Depends(current_user)):
                            m["quality_score"])
             v["note"], v["note_en"] = m["recommendation"], m["recommendation_en"]
             v["quality"] = m["quality_score"]
-        d = {k: v[k] for k in
-             ("id", "name", "duration", "width", "height", "quality",
-              "note", "note_en")}
-        d["shot_at"] = v["shot_at"]
-        out.append(d)
+        out.append(_video_out(v))
     return out
 
 
@@ -543,11 +553,14 @@ async def upload(request: Request, file: UploadFile = File(...),
         "path": dst, "name": os.path.basename(dst), "fp": _fingerprint(dst),
         "duration": m["duration"], "width": m["width"], "height": m["height"],
         "quality": m["quality_score"], "note": m["recommendation"],
-        "note_en": m.get("recommendation_en", "")})
-    if rec["path"] != dst:            # 同一用户重复上传，复用旧记录
+        "note_en": m.get("recommendation_en", ""),
+        # 这里不写 shot_at，新上传的条目就没有拍摄时间，
+        # 界面上会退回显示哈希文件名，直到下一次列表请求才补上
+        "shot_at": shot_time(dst)})
+    reused = rec["path"] != dst       # 同一用户重复上传，复用旧记录
+    if reused:
         os.unlink(dst)
-    return {k: rec[k] for k in ("id", "name", "duration", "width", "height",
-                                "quality", "note", "note_en")}
+    return _video_out(rec, reused)
 
 
 @app.post("/api/ingest")
@@ -617,11 +630,12 @@ def ingest(req: Ingest, u: Dict = Depends(current_user)):
         "path": dst, "name": os.path.basename(dst), "fp": _fingerprint(dst),
         "duration": m["duration"], "width": m["width"], "height": m["height"],
         "quality": m["quality_score"], "note": m["recommendation"],
-        "note_en": m.get("recommendation_en", "")})
-    if rec["path"] != dst:
+        "note_en": m.get("recommendation_en", ""),
+        "shot_at": shot_time(dst)})
+    reused = rec["path"] != dst
+    if reused:
         os.unlink(dst)
-    return {k: rec[k] for k in ("id", "name", "duration", "width", "height",
-                                "quality", "note", "note_en")}
+    return _video_out(rec, reused)
 
 
 @app.post("/api/jobs")
