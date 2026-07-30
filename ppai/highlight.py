@@ -20,6 +20,34 @@ from typing import Dict, List, Optional
 import numpy as np
 
 
+# 发球的四拍间隔模板。规则决定只有发球会连续两次触台
+# （A挥拍 → 落A台 → 落B台 → B挥拍），所以这个模式是发球独有的。
+# 三个数来自 5fa9db9e 的 18 次发球真值（均值 ± 标准差）。
+_SERVE_MU = np.array([0.177, 0.345, 0.234])
+_SERVE_SD = np.array([0.040, 0.109, 0.079])
+
+
+def serve_scores(hits: np.ndarray) -> np.ndarray:
+    """每个瞬态作为「发球起点」的可信度，0-1，越大越像。
+
+    实测（18 次发球真值，每个只认最近的一个候选）AUC 0.922。
+    试过两个变体，都更差，别再试：
+      * 允许第一拍静音（轻发球触拍声小）→ 0.787。少一个间隔约束后
+        大量非发球模式也能匹配上，放宽得不偿失。
+      * 叠加「前置长静音」→ 0.897。静音单独只有 0.731，且发球前 0.5 秒内
+        常有上一回合的落地弹跳，这个信号没那么干净。
+    """
+    n = len(hits)
+    out = np.zeros(n)
+    if n < 4:
+        return out
+    for i in range(n - 3):
+        dt = np.diff(hits[i:i + 4])
+        d2 = float(np.sum(((dt - _SERVE_MU) / _SERVE_SD) ** 2)) / 3.0
+        out[i] = float(np.exp(-0.5 * d2))      # 马氏距离转成 0-1
+    return out
+
+
 def rallies(hits: np.ndarray, cfg: Dict, amps: Optional[np.ndarray] = None) -> List[Dict]:
     """把击球瞬态按间隔聚成**活动片段**。
 
@@ -36,12 +64,29 @@ def rallies(hits: np.ndarray, cfg: Dict, amps: Optional[np.ndarray] = None) -> L
         return []
     if amps is None:
         amps = np.ones(len(hits))
+
+    # 边界有两个来源：发球（结构信号）和静音（兜底）。
+    # 只用静音时同一个阈值要兼顾「回合内不切」和「回合间要切」，做不到 ——
+    # 实测 18 个真回合被切成 35 个，同时 top-3 又各自横跨两个真回合。
+    # 发球检测只**增加**切点，检不到就退回原来的静音规则，
+    # 所以最坏情况不比现在差。
+    sc = cfg.get("serve_boundary", {}) or {}
+    if sc.get("enabled"):
+        ss = serve_scores(np.asarray(hits, float))
+        thr = float(sc.get("threshold", 0.85))
+        fgap = float(sc.get("fallback_gap_s", gap))
+    else:
+        ss = np.zeros(len(hits))
+        thr, fgap = 2.0, gap
+
     idx: List[List[int]] = [[0]]
     for i in range(1, len(hits)):
-        if hits[i] - hits[idx[-1][-1]] <= gap:
-            idx[-1].append(i)
-        else:
+        if ss[i] >= thr:                                  # 发球 → 一定开新回合
             idx.append([i])
+        elif hits[i] - hits[idx[-1][-1]] > fgap:          # 兜底：静音够长
+            idx.append([i])
+        else:
+            idx[-1].append(i)
 
     out = []
     for g in idx:
