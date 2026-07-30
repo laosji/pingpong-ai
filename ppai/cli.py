@@ -162,7 +162,7 @@ def main(argv=None) -> int:
     p.add_argument("--top", type=int, help="highlight: 取前几个回合")
     p.add_argument("--minutes", type=float, help="highlight: 目标集锦时长（分钟）")
     p.add_argument("--type", default="auto",
-                   choices=["auto", "best", "longest", "kill", "weak", "power",
+                   choices=["auto", "best", "longest", "weak", "power",
                             "trim", "records", "all"],
                    help="highlight: 集锦类型（对应方案模块七的四种）")
     args = p.parse_args(argv)
@@ -245,7 +245,7 @@ def main(argv=None) -> int:
                 kinds = ["trim"]      # 自动 = 完整版，与网页端/skill 保持一致
                 print("  自动 = 完整版：去掉捡球和等待，一个球都不漏")
             elif args.type == "all":
-                kinds = ["best", "longest", "kill", "weak", "power", "records"]
+                kinds = ["best", "longest", "weak", "power", "records"]
             else:
                 kinds = [args.type]
                 # 用户手选了不适合这段素材的主题：不拒绝，但要说明会得到什么

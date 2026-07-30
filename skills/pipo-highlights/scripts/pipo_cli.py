@@ -29,7 +29,7 @@ import urllib.request
 BASE = os.environ.get("PIPO_BASE_URL", "http://127.0.0.1:8020").rstrip("/")
 TOKEN = os.environ.get("PIPO_TOKEN", "")
 
-THEMES = ("auto", "best", "longest", "kill", "power", "trim", "weak", "records")
+THEMES = ("auto", "best", "longest", "power", "trim", "weak", "records")
 
 
 def die(msg: str) -> None:

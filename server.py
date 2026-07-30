@@ -925,8 +925,9 @@ MCP_TOOLS = [
                      "openWorldHint": False},
      "description": ("生成集锦并返回下载链接，通常十几秒到一分钟。theme 可选："
                      "auto（默认，等于完整版：去掉捡球和等待、一个球都不漏）、"
-                     "best 训练集锦、longest 最长对拉、kill 最帅击球、"
-                     "power 最重扣杀、weak 失误合集、records 精彩瞬间。"),
+                     "best 训练集锦、longest 最长相持、"
+                     "power 扣杀瞬间（单次声音峰值，最可靠）、"
+                     "weak 失误合集、records 精彩瞬间。"),
      "inputSchema": {"type": "object",
                      "properties": {"video_id": {"type": "string"},
                                     "theme": {"type": "string", "default": "auto"},

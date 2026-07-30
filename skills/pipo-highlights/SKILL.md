@@ -45,7 +45,7 @@ python3 {baseDir}/scripts/pipo_cli.py list
 ### 2. 剪
 
 ```bash
-python3 {baseDir}/scripts/pipo_cli.py cut <video_id> --theme kill --top 5
+python3 {baseDir}/scripts/pipo_cli.py cut <video_id> --theme power --top 5
 ```
 
 耗时通常十几秒到一分钟，脚本会打印进度、完成后给出下载链接。
@@ -55,9 +55,8 @@ python3 {baseDir}/scripts/pipo_cli.py cut <video_id> --theme kill --top 5
 | theme | 名称 | 什么时候用 |
 |---|---|---|
 | `auto` | 自动（=完整版） | **默认。用户没明确说要什么就用它** —— 去掉捡球和等待，一个球都不漏，约压到六成 |
-| `longest` | 最长对拉 | "最精彩的来回"、"打得最久的那几个球" |
-| `kill` | 最帅击球 | "最漂亮的一球"、"绝杀" —— 收尾力量 / 回合整体力量比值最高 |
-| `power` | 最重扣杀 | "最狠的一板"、"最用力的" |
+| `longest` | 最长相持 | "最精彩的来回"、"打得最久的那几个球" |
+| `power` | 扣杀瞬间 | "最狠的一板"、"最帅的一球" —— 单次击球声音峰值最高（实测最可靠） |
 | `best` | 训练集锦 | 多球训练素材的通用集锦 |
 | `weak` | 失误合集 | "看看我哪些球没打好" |
 | `records` | 精彩瞬间 | 各单项之最各取一段 |
