@@ -284,9 +284,11 @@ const I18N = {
        duration:'时长', resolution:'分辨率', quality:'质量评分',
        theme:'剪辑主题', go:'开始剪辑', submitting:'提交中', failed:'剪辑失败',
        auto:'自动', autoDesc:'一条几十秒的精华当场看，外加一条去掉捡球和等待的完整版存档',
-       analysis:'录像分析', structure:'结构', rallies:'回合',
+       analysis:'录像分析', structure:'结构',
        playtime:'有效打球', ratio:'占比', sparse:'捡球多', dense:'连续打',
-       accuracy:'回合数与时长有 10–20% 误差；击球总数偏高，暂不展示。',
+       accuracy:'「有效打球」用严格口径统计（相邻击球 0.3 秒内才算在打），'
+                +'所以会明显小于「完整版」的时长 —— 后者押的是一个球都不漏，'
+                +'每段前后各留 0.5 秒。回合数和击球总数偏高，不展示。',
        download:'下载', del:'删除片段', done:'完成',
        segsHint:n=>`${n} 个片段 · 点时间跳转，↓ 单独下载`,
        delHint:'点 ✕ 删除这一段 —— 成片会立刻重拼，同时作为负例回流训练',
@@ -313,9 +315,11 @@ const I18N = {
        duration:'Length', resolution:'Resolution', quality:'Quality',
        theme:'Edit style', go:'Create', submitting:'Submitting', failed:'Failed',
        auto:'Auto', autoDesc:'A short highlights reel to watch now, plus a full version with idle time removed',
-       analysis:'Analysis', structure:'Structure', rallies:'Rallies',
+       analysis:'Analysis', structure:'Structure',
        playtime:'Play time', ratio:'Share', sparse:'Lots of waiting', dense:'Mostly playing',
-       accuracy:'Rally count and play time carry 10–20% error; total strokes runs high and is not shown.',
+       accuracy:'"Play time" uses a strict rule (hits within 0.3s of each other), '
+                +'so it reads much lower than the full cut — that one keeps every rally '
+                +'with 0.5s of lead-in and tail. Rally and stroke counts run high and are not shown.',
        download:'Download', del:'Remove clips', done:'Done',
        segsHint:n=>`${n} clips · click a time to jump, ↓ to download`,
        delHint:'Click ✕ to remove a clip — the reel is rebuilt at once and the clip trains the model',
@@ -639,7 +643,9 @@ function done(j){
     <div class="card-hd"><h3>${t('analysis')}</h3></div>
     <div class="metrics" style="border-top:0">
       <div class="metric"><b>${k.kind==='sparse'?t('sparse'):t('dense')}</b><span>${t('structure')}</span></div>
-      <div class="metric"><b>${s.rally_count ?? '—'}</b><span>${t('rallies')}</span></div>
+      <!-- 回合数已去掉：对着发球真值实测偏高约 1.9 倍（真值 18 个，管线报 34 个）。
+           拍数因为同样的理由去掉过，这是同类问题。分组本身对排序够用
+           （留出验证 Spearman 0.91，前 5 名 5/5），但它的绝对个数不该报出去。 -->
       <div class="metric"><b>${s.playing_seconds!=null?mmss(s.playing_seconds):'—'}</b><span>${t('playtime')}</span></div>
       <div class="metric"><b>${s.playing_ratio!=null?Math.round(s.playing_ratio*100)+'%':'—'}</b><span>${t('ratio')}</span></div>
     </div>
