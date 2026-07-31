@@ -4,8 +4,10 @@
 # 根本用不到 GPU。
 FROM python:3.13-slim
 
+# fonts-noto-cjk 是叠字用的。没有它 render.caption_font() 返回 None，
+# 代码会跳过叠字而不是崩，但成片上就不会有「第 N 回合」。约 60MB。
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ffmpeg curl ca-certificates \
+      ffmpeg curl ca-certificates fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
