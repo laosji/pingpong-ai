@@ -1,0 +1,83 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pipo AI · 领取邀请码</title>
+<link rel="stylesheet" href="/auth.css">
+<!-- 这一页只做一件事：留个邮箱换一个邀请码。
+     拿到码之后不让用户手抄 —— 直接带回上一页填好。 -->
+<div class="box">
+  <div class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none">
+    <path d="M2.6 19.2c3.4.2 7-1.4 9.6-4.3" stroke="currentColor" stroke-width="2.2"
+          stroke-linecap="round" opacity=".38"/>
+    <path d="M8.4 19.4c2.9-.6 5.5-2.5 7.3-5.2" stroke="currentColor" stroke-width="2.2"
+          stroke-linecap="round" opacity=".7"/>
+    <circle cx="18.4" cy="7.4" r="3.6" fill="currentColor"/>
+  </svg></div>
+  <h1>领取邀请码</h1>
+  <p class="sub">留个邮箱，我们发一个给你。每个邮箱只发一个。<br>
+    <span style="opacity:.8">One code per email address.</span></p>
+
+  <form onsubmit="claim(event)" novalidate id="form">
+    <div class="field">
+      <label for="email">邮箱 · Email</label>
+      <input id="email" type="email" autocomplete="email" inputmode="email"
+             placeholder="you@example.com" autofocus>
+      <p class="msg" id="m-email"></p>
+    </div>
+    <button type="submit" id="btn">领取 · Get a code</button>
+  </form>
+
+  <div id="done" hidden>
+    <p class="sub" style="margin:0" id="donetip"></p>
+    <div class="code" id="code"></div>
+    <button type="button" onclick="carry()">用它开始 · Continue →</button>
+  </div>
+
+  <p class="alt">
+    已经有邀请码了？<a href="/login.html">直接开始 →</a><br>
+    <span style="opacity:.75">Already have a code? <a href="/login.html">Start here</a></span>
+  </p>
+  <p class="foot">
+    <a href="https://x.com/laosji_net" target="_blank" rel="noopener">𝕏 @laosji_net</a>
+  </p>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+function say(text){
+  $('#m-email').textContent = text || '';
+  $('#email').setAttribute('aria-invalid', text ? 'true' : 'false');
+}
+
+async function claim(e){
+  e.preventDefault(); say('');
+  const email = $('#email').value.trim();
+  // 只做形状检查，不做花哨的正则 —— 真正的判断在服务端，
+  // 前端这道只是为了不让人白等一个来回。
+  if(!email || !/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(email)){
+    say('请填一个能收信的邮箱 · Enter a valid email'); $('#email').focus(); return;
+  }
+  $('#btn').disabled = true;
+  try{
+    const r = await fetch('/api/invite/claim', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({email})});
+    const d = await r.json();
+    if(!r.ok){ $('#btn').disabled = false; return say(d.detail || '领取失败'); }
+    $('#form').hidden = true;
+    $('#done').hidden = false;
+    $('#code').textContent = d.code;
+    $('#donetip').textContent = d.again
+      ? '这个邮箱之前领过，还是这一个。'
+      : '拿好这个码，可以剪 ' + (d.quota ?? 3) + ' 个视频。';
+  }catch(_){
+    $('#btn').disabled = false;
+    say('网络不通，稍后再试 · Network error, try again');
+  }
+}
+
+// 别让用户手抄 12 位码 —— 存起来带回上一页自动填好
+function carry(){
+  sessionStorage.setItem('pipo_code', $('#code').textContent.trim());
+  location.href = '/login.html';
+}
+</script>

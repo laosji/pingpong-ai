@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "video": "/Users/duanchao/Downloads/PP-video/06a6c98c76ebd0a720a75f2f3ab0d352.mp4",
+  "video": "06a6c98c76ebd0a720a75f2f3ab0d352.mp4",
   "duration": 727.84,
   "complete": false,
   "playing": [
@@ -34,5 +34,8 @@
     277.323,
     331.726
   ],
-  "notes": "Derived from sparse short playing marks by merging gaps <= 15s; reference only, not complete ground truth."
+  "notes": "Derived from sparse short playing marks by merging gaps <= 15s; reference only, not complete ground truth.",
+  "pickup": [],
+  "negative_ranges": [],
+  "complete_ranges": []
 }

@@ -39,10 +39,27 @@ button,input,label{font-family:inherit}
   position:sticky;top:0;z-index:20}
 .logo{width:26px;height:26px;border-radius:7px;background:var(--accent);
   display:grid;place-items:center;color:var(--on-accent);font-size:14px;font-weight:700}
+/* 品牌标记：一颗球加两道拖影。不用字母 —— 「P」既不说明这是乒乓球，
+   也不说明它在动。两道拖影长短不同、透明度递增，读起来是加速而不是平移；
+   球放在轨迹前端，方向感来自这个位置关系而不是箭头。
+   用 currentColor，深浅色主题和不同背景上都不用另配一份。 */
+.logo svg{width:60%;height:60%;display:block;overflow:visible}
 .brand{font-size:15px;font-weight:640;letter-spacing:-.01em}
 .tag{font-size:12.5px;color:var(--ink-3);padding-left:12px;
   border-left:1px solid var(--line)}
-.who{margin-left:auto;font-size:12.5px;color:var(--ink-3)}
+.who{font-size:12.5px;color:var(--ink-3)}
+.status{margin-left:auto;display:flex;align-items:center;gap:8px;
+  font-size:12.5px;color:var(--ink-2);
+  border:1px solid var(--line);background:var(--surface-2);
+  border-radius:999px;padding:5px 14px 5px 11px;
+  opacity:0;transform:translateY(-4px);pointer-events:none;
+  transition:opacity .22s ease,transform .22s ease}
+.status[data-on]{opacity:1;transform:none;pointer-events:auto}
+.status[data-on="done"]{border-color:var(--accent-line);background:var(--accent-wash);
+  color:var(--accent);cursor:pointer}
+.status[data-on="fail"]{border-color:var(--warn);background:var(--warn-wash);color:var(--warn)}
+.status .dot{width:14px;height:14px;flex:0 0 auto}
+.status b{font-weight:620;font-variant-numeric:tabular-nums}
 .lang{border:1px solid var(--line-2);background:transparent;
   color:var(--ink-3);border-radius:999px;padding:4px 12px;font-size:12px;
   cursor:pointer;transition:all .12s ease;font-variant:tabular-nums}
@@ -56,19 +73,12 @@ button,input,label{font-family:inherit}
 .side-body{overflow-y:auto;padding:0 12px 16px;flex:1;min-height:0}
 .stage-wrap{overflow-y:auto;min-height:0}
 .stage{max-width:1240px;margin:0 auto;padding:32px 32px 64px}
-/* 左边是要做的决定（顺序、主题），右边是预览。
-   一栏时整页要滑 —— 滑到主题条画面就看不见了，而选主题恰恰要看着画面。
-   所以右栏 sticky：左边滑，画面一直在。 */
-.two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.05fr);
-  gap:20px;align-items:start}
-.col-side{position:sticky;top:20px}
-/* 成片结果不进两栏 —— 片段时间码那一片本来就要宽度，
-   而且它属于「看结果」而不是「做决定」。 */
-@media (max-width:1080px){
-  .stage{max-width:820px}
-  .two{grid-template-columns:1fr}
-  .col-side{position:static}
-}
+/* **一栏到底。** 曾经是左栏放决定（顺序、主题）、右栏放预览，
+   但实测单选时左栏只剩一张主题卡片，内容高 271px 而可视高 800px，
+   下面空 529px；而把顺序条挪到播放器下面之后，多选时也是同样的空。
+   现在的顺序就是操作顺序：看画面 → 排素材 → 选主题 → 开始剪。 */
+.one{max-width:860px;margin:0 auto}
+@media (max-width:1080px){ .stage{max-width:860px} }
 .eyebrow{font-size:11px;font-weight:660;letter-spacing:.06em;color:var(--ink-3)}
 
 .item{display:flex;align-items:center;gap:10px;width:100%;text-align:left;
@@ -91,7 +101,6 @@ button,input,label{font-family:inherit}
   white-space:nowrap;transition:all .12s ease}
 .up:hover{border-color:var(--accent);color:var(--accent)}
 .up[data-busy="1"]{opacity:.55;pointer-events:none}
-.side-acts{display:flex;gap:6px;align-items:center}
 /* 导入是主操作 —— 列表空的时候它是唯一能干的事，得一眼看到。
    多选是次操作，保持描边。 */
 .up.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);
@@ -124,6 +133,14 @@ button,input,label{font-family:inherit}
   font-variant-numeric:tabular-nums}
 video{max-width:100%;display:block}
 
+/* 素材信息一行带过。ⓘ 那条超出就省略，完整内容在 title 里 ——
+   它是「知道一下」级别的提示，不该占三行高度。 */
+.factline{display:flex;align-items:center;gap:8px;padding:11px 20px;
+  border-top:1px solid var(--line);font-size:12.5px;color:var(--ink-3);
+  white-space:nowrap;overflow:hidden}
+.factline b{font-weight:620;color:var(--ink);font-variant-numeric:tabular-nums}
+.factline i{width:1px;height:11px;background:var(--line-2);flex:0 0 auto}
+.factline .fact-note{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));
   border-top:1px solid var(--line)}
 .metric{padding:14px 20px;border-right:1px solid var(--line)}
@@ -133,12 +150,10 @@ video{max-width:100%;display:block}
 .metric span{font-size:11.5px;color:var(--ink-3)}
 
 /* 主题名排成一行，说明统一显示在下方 —— 说明写进按钮会让宽度参差、换行成好几排 */
-.chips{display:flex;gap:8px;overflow-x:auto;padding:2px 0 4px;scrollbar-width:none}
-.chips::-webkit-scrollbar{display:none}
-/* 主题条藏了滚动条，右侧不给提示就会被当成「渲染坏了」——
-   溢出时右缘渐隐，滚到底自动去掉。 */
-.chips.more{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 36px),transparent);
-  mask-image:linear-gradient(90deg,#000 calc(100% - 36px),transparent)}
+/* **换行，不横向滚动。** 一共就五个固定主题，实测默认窗口（1280）下
+   需要 426px 而只有 405px，最后四个全被裁掉 —— 让人横向滚动去找一个
+   五选一的选项是没道理的。换行最多占两排，一眼全见。 */
+.chips{display:flex;flex-wrap:wrap;gap:8px;padding:2px 0 4px}
 .chip{flex:0 0 auto;white-space:nowrap;border:1px solid var(--line-2);
   background:var(--surface);color:var(--ink-2);border-radius:999px;
   padding:7px 15px;font-size:13px;font-weight:500;cursor:pointer;
@@ -193,6 +208,106 @@ video{max-width:100%;display:block}
 .spin{width:15px;height:15px;border:2px solid var(--line-2);
   border-top-color:var(--accent);border-radius:50%;animation:sp .7s linear infinite}
 @keyframes sp{to{transform:rotate(360deg)}}
+/* 侧栏底栏：语言和 𝕏 这类「用不到但要找得到」的东西。
+   放顶栏会和品牌区抢注意力 —— 顶栏应该只说「这是什么」，
+   而这两个是随时可点、平时不看的工具，属于角落。 */
+.side-foot{margin-top:auto;padding:12px 16px;border-top:1px solid var(--line);
+  display:flex;align-items:center;gap:8px}
+/* 首屏：一个视频都没有时，侧栏列表是空的，藏起来让导入入口独占视线。
+   **但底栏留着** —— 否则第一次打开的人找不到语言开关，
+   而首屏恰恰是最需要它的时候（英文用户看到的是一屏中文）。 */
+body[data-view="landing"] .side-hd,
+body[data-view="landing"] .side-body,
+body[data-view="landing"] #multihint,
+body[data-view="landing"] #prog{display:none}
+body[data-view="landing"] .side{border-right:0;background:transparent}
+body[data-view="landing"] .side-foot{border-top:0}
+body[data-view="landing"] .shell{grid-template-columns:180px minmax(0,1fr)}
+.hero{max-width:520px;margin:0 auto;padding:64px 24px;text-align:center}
+/* 首屏是「还没有素材」的状态，本来就没什么可看的 —— 一个弹跳的球
+   让这一屏有个活物，同时一眼说明这是乒乓球工具。
+   纯 CSS，不引外部资源（app 是离线的）。 */
+.hero-ball{position:relative;width:64px;height:74px;margin:0 auto 20px}
+.ball{position:absolute;left:50%;top:0;width:28px;height:28px;margin-left:-14px;
+  border-radius:50%;
+  /* 球的高光偏左上，和下面阴影的方向一致，否则看起来像贴纸 */
+  background:radial-gradient(circle at 34% 30%, #fff 0%, #ffc46b 42%, #f59e0b 78%, #c2670a 100%);
+  animation:ball-drop .62s cubic-bezier(.35,0,.7,1) infinite alternate}
+.ball-shadow{position:absolute;left:50%;bottom:4px;width:30px;height:7px;
+  margin-left:-15px;border-radius:50%;background:#000;opacity:.28;
+  filter:blur(2.5px);
+  animation:ball-shade .62s cubic-bezier(.35,0,.7,1) infinite alternate}
+/* 落到底时压扁一点。真实的乒乓球几乎不形变，但没有这一下，
+   动画看起来像是「悬浮」而不是「砸在台面上」。 */
+@keyframes ball-drop{
+  0%   {transform:translateY(0) scale(1,1)}
+  82%  {transform:translateY(38px) scale(1,1)}
+  92%  {transform:translateY(42px) scale(1.14,.84)}
+  100% {transform:translateY(38px) scale(1,1)}
+}
+@keyframes ball-shade{
+  0%   {transform:scale(.6);opacity:.14}
+  100% {transform:scale(1);opacity:.32}
+}
+/* 有人对动效敏感，也有人只是不想要 —— 尊重系统设置，静止显示 */
+@media (prefers-reduced-motion:reduce){
+  .ball{animation:none;transform:translateY(38px)}
+  .ball-shadow{animation:none}
+}
+.hero h1{margin:0 0 8px;font-size:26px;font-weight:660;letter-spacing:-.02em}
+.hero-sub{margin:0 0 32px;color:var(--ink-3);font-size:14px}
+.hero-drop{display:block;border:2px dashed var(--line-2);border-radius:var(--r-lg);
+  padding:44px 24px;cursor:pointer;background:var(--surface);
+  transition:border-color .14s ease,background .14s ease}
+.hero-drop:hover,.hero-drop.over{border-color:var(--accent);background:var(--accent-wash)}
+.hero-ic{font-size:26px;color:var(--accent);line-height:1;margin-bottom:12px}
+.hero-cta{font-size:16px;font-weight:600}
+.hero-hint{font-size:12.5px;color:var(--ink-3);margin-top:6px}
+.hero-quota{font-size:12.5px;color:var(--ink-3);margin-top:18px}
+/* 𝕏 和语言都在侧栏底栏（见 .side-foot） */
+.xlink{display:grid;place-items:center;width:28px;height:28px;border-radius:999px;
+  border:1px solid var(--line-2);color:var(--ink-3);text-decoration:none;
+  font-size:13px;font-weight:700;transition:all .12s ease}
+.xlink:hover{border-color:var(--accent);color:var(--accent)}
+/* 删完之后就地问一句，不弹窗、不挡路。12 秒没人理就自己消失。 */
+.why{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  padding:9px 12px;background:var(--surface-2);border:1px solid var(--line);
+  border-radius:var(--r);font-size:12.5px;color:var(--ink-2)}
+.why button{width:auto;margin:0;padding:4px 10px;font-size:12px;border-radius:999px;
+  border:1px solid var(--line-2);background:transparent;color:var(--ink-2);cursor:pointer}
+.why .why-yes{border-color:var(--accent);color:var(--accent)}
+.why button:hover{filter:none;border-color:var(--accent);color:var(--accent)}
+/* 出片后收起原片：成片才是这时候要看的东西。留一个开关能调回来比对。 */
+body[data-cut="1"] #srcwrap{display:none}
+/* #cut 和 #out 在 .one 外面，不跟着限宽的话成片卡片会比下面的
+   主题卡片宽一截，边缘对不齐 */
+#cut, #out{max-width:860px;margin-left:auto;margin-right:auto}
+.srcline{margin:-6px 0 20px;text-align:center}
+.srcline button{width:auto;margin:0;padding:5px 14px;font-size:12px;border-radius:999px;
+  border:1px solid var(--line-2);background:transparent;color:var(--ink-3);cursor:pointer}
+.srcline button:hover{filter:none;border-color:var(--accent);color:var(--accent)}
+/* 设置面板 */
+.sheet{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.35);
+  display:grid;place-items:center;padding:24px}
+.sheet-box{width:min(560px,100%);max-height:86vh;overflow:auto;
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);
+  box-shadow:0 20px 60px rgba(0,0,0,.28)}
+.sheet-hd{display:flex;align-items:center;justify-content:space-between;
+  padding:16px 20px;border-bottom:1px solid var(--line)}
+.sheet-hd h3{margin:0;font-size:14px;font-weight:620}
+.sheet-body{padding:20px}
+.pref-t{font-size:14px;font-weight:620;margin-bottom:6px}
+.pref-d{margin:0 0 16px;font-size:13px;color:var(--ink-2);line-height:1.65}
+.pref-lists{display:grid;grid-template-columns:1fr 1fr;gap:16px;
+  background:var(--surface-2);border:1px solid var(--line);
+  border-radius:var(--r);padding:14px 16px}
+.pref-lists b{font-size:11.5px;font-weight:660;color:var(--ink-3);
+  letter-spacing:.04em}
+.pref-lists ul{margin:8px 0 0;padding-left:16px;font-size:12.5px;
+  color:var(--ink-2);line-height:1.75}
+.pref-n{margin:14px 0 0;font-size:12.5px;color:var(--ink-3)}
+.pref-acts{display:flex;gap:8px;margin-top:16px}
+.pref-acts .btn{width:auto;margin:0}
 .blank{text-align:center;padding:96px 24px;color:var(--ink-3)}
 .blank .ic{font-size:28px;line-height:1;margin-bottom:14px;opacity:.45}
 .blank p{margin:0;font-size:14px}
@@ -254,31 +369,85 @@ video{max-width:100%;display:block}
 </style>
 
 <div class="top">
-  <div class="logo">P</div>
+  <div class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none">
+    <path d="M2.6 19.2c3.4.2 7-1.4 9.6-4.3" stroke="currentColor" stroke-width="2.2"
+          stroke-linecap="round" opacity=".38"/>
+    <path d="M8.4 19.4c2.9-.6 5.5-2.5 7.3-5.2" stroke="currentColor" stroke-width="2.2"
+          stroke-linecap="round" opacity=".7"/>
+    <circle cx="18.4" cy="7.4" r="3.6" fill="currentColor"/>
+  </svg></div>
   <div class="brand">Pipo AI</div>
   <div class="tag" id="tagline">Your table tennis highlights, automatically</div>
+  <!-- 剪辑状态。放顶栏右侧是因为成片结果在页面下方，剪长片时用户往往已经
+       滚下去或者切走了 —— 状态钉在顶栏才始终看得见。 -->
+  <div class="status" id="status" role="status" aria-live="polite"></div>
   <span class="who" id="who"></span>
-  <button class="lang" id="lang" title="中文 / English">EN</button>
   <button class="lang" id="signout" title="退出 / Sign out">⏻</button>
+</div>
+
+<!-- 设置。目前只有一件事：要不要把「检测错了」的反馈回传。
+     这是隐私决定，所以**在同意之前就把要发什么、不发什么列全**，
+     而不是一句「帮助改进产品」了事。 -->
+<!-- 按需下载。做成挡路的面板而不是角落提示：没有模型就不该开始分析。 -->
+<div class="sheet" id="dl" hidden>
+  <div class="sheet-box" role="dialog" aria-modal="true" aria-labelledby="dl-t">
+    <div class="sheet-hd"><h3 id="dl-t"></h3></div>
+    <div class="sheet-body">
+      <p class="pref-d" id="dl-d"></p>
+      <div class="prog" id="dl-bar" hidden style="margin:0 0 12px"><i id="dl-fill"></i></div>
+      <div class="pref-acts"><button class="btn" id="dl-go"></button></div>
+      <p class="pref-n" id="dl-msg"></p>
+    </div>
+  </div>
+</div>
+
+<div class="sheet" id="sheet" hidden>
+  <div class="sheet-box" role="dialog" aria-modal="true" aria-labelledby="sheet-t">
+    <div class="sheet-hd">
+      <h3 id="sheet-t">设置</h3>
+      <button class="lang" id="sheet-x" title="关闭">✕</button>
+    </div>
+    <div class="sheet-body">
+      <div class="pref">
+        <div class="pref-t">帮助改进检测</div>
+        <p class="pref-d" id="pref-d"></p>
+        <div class="pref-lists">
+          <div><b>会发送</b><ul id="will"></ul></div>
+          <div><b>不会发送</b><ul id="wont"></ul></div>
+        </div>
+        <p class="pref-n" id="pref-stat"></p>
+        <div class="pref-acts">
+          <button class="btn" id="contrib-toggle"></button>
+          <button class="btn ghost" id="contrib-send" hidden></button>
+        </div>
+        <p class="pref-n" id="contrib-msg"></p>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div class="shell">
   <div class="side" id="side">
     <div class="side-hd">
-      <span class="eyebrow" id="lbl-videos">录像</span>
-      <div class="side-acts">
-        <button class="up" id="multi" type="button"><span id="multitxt">选择文件</span></button>
-        <label class="up primary" id="up">
-          <input type="file" id="file" multiple
-                 accept="video/mp4,video/quicktime,.mp4,.mov,.m4v" hidden>
-          <span id="uptxt">导入素材</span>
-        </label>
-      </div>
+      <label class="up primary" id="up">
+        <input type="file" id="file" multiple
+               accept="video/mp4,video/quicktime,.mp4,.mov,.m4v" hidden>
+        <span id="uptxt">导入素材</span>
+      </label>
+      <button class="up" id="multi" type="button"><span id="multitxt">选择文件</span></button>
     </div>
+    <!-- 提示紧跟在它说的那个按钮下面。原来钉在侧栏最底部，
+         离「多选素材」约 1100px —— 读到提示的人还得回头找按钮。 -->
+    <div class="note" id="multihint" style="padding:0 16px 10px"></div>
     <div id="prog"></div>
     <div class="side-body" id="list" role="listbox" aria-multiselectable="true"
          aria-label="录像列表"></div>
-    <div class="note" id="multihint" style="padding:8px 12px 12px"></div>
+    <div class="side-foot">
+      <a class="xlink" href="https://x.com/laosji_net" target="_blank" rel="noopener"
+         title="@laosji_net on X">𝕏</a>
+      <button class="lang" id="lang" title="中文 / English">EN</button>
+      <button class="lang" id="prefs" title="设置">⚙</button>
+    </div>
   </div>
   <div class="stage-wrap"><div class="stage" id="stage"></div></div>
 </div>
@@ -289,6 +458,10 @@ const I18N = {
        upfail:'上传失败', nobackend:'后端没连上',
        novideo:'还没有录像。点右上角「导入素材」，或把视频拖进来。',
        blank:'选一段录像开始', blankSub:'也可以把视频文件拖到左侧',
+       heroTitle:'把训练录像剪成集锦', heroSub:'选一段固定机位的录像，自动找出精彩回合',
+       heroCta:'选择视频，或拖到这里', heroHint:'mp4 / mov，单个最长 60 分钟、最大 1GB',
+       heroHintApp:'mp4 / mov · 素材留在原处，不会被复制',
+       quotaLeft:(l,q)=>`当前邀请码还能剪 ${l} 个视频（共 ${q} 个）`,
        multiHint:'点「多选素材」可挑多段一起剪', multiSel:'已选 %d 段素材 · 合计 %s',
        selMode:'多选素材', selDone:'完成 (%d)', multiOn:'点条目加选／取消，选好后点「完成」',
        estWait:'正在估算这段素材能剪出什么…',
@@ -300,16 +473,37 @@ const I18N = {
        trimKeep:(n,p)=>`保留所有 ${n} 段打球，每段前后各留 ${p} 秒`,
        order:'素材顺序', orderAuto:'按拍摄时间排列 · 可拖动调整',
        orderManual:'已手动调整 · 可继续拖动',
-       duration:'时长', durationAll:'合计时长', resolution:'分辨率', quality:'质量评分',
+       duration:'时长', durationAll:'合计时长', resolution:'分辨率',
        nowPlaying:(i,n,name)=>`连续播放 ${i}/${n} · ${name}`,
        theme:'剪辑主题', go:'开始剪辑', submitting:'提交中', failed:'剪辑失败',
        auto:'自动', autoDesc:'一条几十秒的精华当场看，外加一条去掉捡球和等待的完整版存档',
        structure:'结构',
        sparse:'捡球多', dense:'连续打',
        kindNote:x=>`这段素材是「${x}」。回合数、拍数、有效打球时长都测不准，所以不展示。`,
-       download:'下载', del:'删除片段', done:'完成',
+       download:'下载', reveal:'在访达中显示', del:'删除片段', done:'完成',
        segsHint:n=>`${n} 个片段 · 点时间跳转，↓ 单独下载`,
-       delHint:'点 ✕ 删除这一段 —— 成片会立刻重拼，同时作为负例回流训练',
+       delHint:'点 ✕ 删除这一段 —— 成片会立刻重拼',
+       whyAsk:'这段其实没在打球？', whyYes:'对，检测错了', whyNo:'不是，只是不想要',
+       whyThanks:'记下了，会用来改进检测 ✓',
+       doneTop:'剪好了', doneClips:'段',
+       showSrc:'查看原素材', hideSrc:'收起原素材',
+       prefDesc:'你点「对，检测错了」时，那一段的声学特征可以回传，用来让检测在更多球馆里更准。默认不发送。',
+       prefWill:['候选时刻（相对该段起点的秒数）','每个候选的 2048 维声学向量',
+                 '一个本机随机生成的安装编号，只用于去重'],
+       prefWont:['音频','画面','文件名与文件路径','拍摄时间','任何账号或设备信息'],
+       prefPending:(n,c,kb)=>`当前有 ${n} 段反馈待发送（${c} 个候选，约 ${kb} KB）`,
+       prefEmpty:'当前没有待发送的反馈。剪辑后点「对，检测错了」才会产生。',
+       prefOff:'关闭回传', prefSend:'现在发送',
+       prefAgree:'同意发送', prefSkip:'跳过',
+       prefUnavailable:'暂时读不到设置，稍后再打开试试',
+       prefSending:'发送中…', prefSent:(n,kb)=>`已发送 ${n} 段，${kb} KB。谢谢。`,
+       prefFail:'发送失败，稍后再试',
+       prefNoEndpoint:'已开启，但收集端还没配置（PIPO_CONTRIB_URL），暂时不会发送。',
+       dlTitle:'需要先下载声学模型',
+       dlDesc:(note,mb)=>`${note}。约 ${mb} MB，只需下载一次，之后离线可用。`,
+       dlGo:'开始下载', dlFail:'下载失败',
+       dlProgress:(a,b)=>`${a} / ${b} MB`, dlDone:'下载完成，可以开始剪辑了',
+       dlNoUrl:'下载地址还没配置（PIPO_ASSET_BASE）。开发环境可把模型放到数据目录的 models/ 下。',
        empty:'这段录像里没有符合条件的片段。',
        fbNone:'看到不对的片段就删掉 —— 这些反馈会直接变成训练数据，用得越多越准。',
        fbSome:(n,s,v)=>`已收到 <b>${n}</b> 处反馈，共 <b>${s}</b> 秒，来自 ${v} 个视频。这些会作为负例并入下次训练。`,
@@ -319,6 +513,11 @@ const I18N = {
        nobackend:'Backend not reachable',
        novideo:'No videos yet. Click "Import", or drop one here.',
        blank:'Pick a video to start', blankSub:'or drop a file on the left',
+       heroTitle:'Turn practice footage into highlights',
+       heroSub:'Upload a fixed-camera recording — the good rallies get found for you',
+       heroCta:'Choose a video, or drop it here', heroHint:'mp4 / mov, up to 60 min and 1GB',
+       heroHintApp:'mp4 / mov · files stay where they are, nothing is copied',
+       quotaLeft:(l,q)=>`${l} of ${q} videos left on this invite`,
        multiHint:'Use “Multi-select” to combine several clips', multiSel:'%d clips selected · %s total',
        selMode:'Multi-select', selDone:'Done (%d)', multiOn:'Tap items to add or remove, then “Done”',
        estWait:'Estimating what this footage yields…',
@@ -330,16 +529,38 @@ const I18N = {
        trimKeep:(n,p)=>`all ${n} segments kept, ${p}s of lead-in and tail on each`,
        order:'Clip order', orderAuto:'By capture time · drag to reorder',
        orderManual:'Manually ordered · drag to adjust',
-       duration:'Length', durationAll:'Total', resolution:'Resolution', quality:'Quality',
+       duration:'Length', durationAll:'Total', resolution:'Resolution',
        nowPlaying:(i,n,name)=>`Playing ${i} of ${n} · ${name}`,
        theme:'Edit style', go:'Create', submitting:'Submitting', failed:'Failed',
        auto:'Auto', autoDesc:'A short highlights reel to watch now, plus a full version with idle time removed',
        structure:'Structure',
        sparse:'Lots of waiting', dense:'Mostly playing',
        kindNote:x=>`This footage is "${x}". Rally counts, stroke counts and play time aren't measured reliably, so they're not shown.`,
-       download:'Download', del:'Remove clips', done:'Done',
+       download:'Download', reveal:'Show in Finder', del:'Remove clips', done:'Done',
        segsHint:n=>`${n} clips · click a time to jump, ↓ to download`,
-       delHint:'Click ✕ to remove a clip — the reel is rebuilt at once and the clip trains the model',
+       delHint:'Click ✕ to remove a clip — the reel is rebuilt at once',
+       whyAsk:'Was there no rally here?', whyYes:'Right, wrong detection',
+       whyNo:'No, just trimming', whyThanks:'Noted — this improves detection ✓',
+       doneTop:'Done', doneClips:'clips',
+       showSrc:'Show source clips', hideSrc:'Hide source clips',
+       prefDesc:'When you tap "Right, wrong detection", that clip\'s acoustic features can be sent back to make detection work in more venues. Off by default.',
+       prefWill:['Candidate timestamps (seconds relative to the clip)',
+                 'A 2048-dim acoustic vector per candidate',
+                 'A random install id generated on this machine, used only for de-duplication'],
+       prefWont:['Audio','Video frames','File names and paths','Recording time','Any account or device information'],
+       prefPending:(n,c,kb)=>`${n} clips pending (${c} candidates, about ${kb} KB)`,
+       prefEmpty:'Nothing pending. Tap "Right, wrong detection" after a cut to create some.',
+       prefOff:'Turn off', prefSend:'Send now',
+       prefAgree:'Agree and send', prefSkip:'Skip',
+       prefUnavailable:'Settings unavailable right now',
+       prefSending:'Sending…', prefSent:(n,kb)=>`Sent ${n} clips, ${kb} KB. Thank you.`,
+       prefFail:'Send failed, try later',
+       prefNoEndpoint:'On, but no collection endpoint is configured (PIPO_CONTRIB_URL) — nothing will be sent yet.',
+       dlTitle:'One-time download needed',
+       dlDesc:(note,mb)=>`${note}. About ${mb} MB, downloaded once and then available offline.`,
+       dlGo:'Download', dlFail:'Download failed',
+       dlProgress:(a,b)=>`${a} / ${b} MB`, dlDone:'Done — you can start editing',
+       dlNoUrl:'No download URL configured (PIPO_ASSET_BASE).',
        empty:'No clips matched in this video.',
        fbNone:'Remove clips that look wrong — that feedback becomes training data.',
        fbSome:(n,s,v)=>`<b>${n}</b> corrections so far, <b>${s}</b> seconds across ${v} videos. They join the next training run.`,
@@ -354,10 +575,18 @@ const themeDesc = x => LANG==='en' ? (x.desc_en||x.desc) : x.desc;
 
 // 任何接口返回 401 都说明 cookie 没了或失效，统一跳登录页 ——
 // 否则页面会静默变空，用户不知道发生了什么
+// 424 = 缺按需下载的模型。任何入口碰到都弹同一个下载面板 ——
+// 分散在每个调用点各写一次，迟早会漏掉一个。
 const _fetch = window.fetch;
 window.fetch = async (...a) => {
   const r = await _fetch(...a);
   if(r.status === 401) location.href = '/login.html';
+  // 424 = 缺按需下载的模型。在拦截层统一接住，导入和剪辑两个入口都能弹 ——
+  // 分散到每个调用点各写一次，迟早漏掉一个，而漏掉的那个会静默降级。
+  if(r.status === 424){
+    const c = r.clone();
+    c.json().then(j => needAssets(j.detail)).catch(() => needAssets());
+  }
   return r;
 };
 
@@ -369,7 +598,7 @@ const mmss = s => { const t = Math.round(s);
   return `${Math.floor(t/60)}:${String(t%60).padStart(2,'0')}`; };
 const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-let videos=[], themes=[], cur=null, sel=[], pickTheme='auto', poll=null;
+let videos=[], themes=[], cur=null, sel=[], pickTheme='auto', poll=null, me=null;
 let multiMode=false;
 // 主题预估：选完素材就在后台跑一次分析，之后点任何主题都立刻知道
 // 「会剪出几段、多长」，不用每个盲跑一分钟。key 是当前素材组合。
@@ -385,7 +614,47 @@ async function boot(){
   }catch(e){
     $('#list').innerHTML=`<div class="note" style="padding:0 12px">${t('nobackend')}</div>`; return;
   }
+  try{ me = await fetch('/api/me').then(r=>r.ok?r.json():null); }catch(e){ me=null; }
   drawList();
+  // 有素材就直接选中最新导入的那个（接口按 created DESC 返回，videos[0] 即最新）。
+  // 否则打开 app 是一片「选一段录像开始」的空白 —— 而右边本来就该显示点什么，
+  // 让人先看到画面再决定，比先看到一句提示再去点一下要短一步。
+  if(videos.length) choose(0);
+  else landing();
+  if(isApp()) appMode();
+}
+
+// 桌面版：把「选文件」从浏览器的文件框换成系统选择器。
+//
+// 用**事件委托 + 捕获阶段**，不是给节点各绑一个：#herodrop 是 landing()
+// 每次重画时新建的，直接绑会在重画后失效，表现是「点第一次好使，
+// 回到首屏再点就没反应」。委托到 document 上就不受重画影响。
+// preventDefault 必须在捕获阶段发生 —— #up 是个 <label>，
+// 不拦住它会连带触发里面隐藏的 <input type=file>，两个选择器一起弹出来。
+function appMode(){
+  document.body.dataset.app='1';
+  // 顶栏这两个是 SaaS 遗留：本地版只有一个用户（「本机」是句废话），
+  // 也没有会话可以退出（点了会去调 /api/logout，然后什么也不会发生）。
+  $('#who')?.remove();
+  $('#signout')?.remove();
+  document.addEventListener('click', e => {
+    if(e.target.closest && e.target.closest('#up, #herodrop')){
+      e.preventDefault(); e.stopPropagation(); pickLocal(); return;
+    }
+    const rv = e.target.closest && e.target.closest('[data-reveal]');
+    if(rv){ e.preventDefault(); revealOut(rv.dataset.reveal); }
+  }, true);
+}
+
+// 成片在磁盘上的哪儿，前端不该知道（out/ 的位置是后端的事），
+// 所以拿 /media/xxx 去问后端要真实路径，再交给原生侧在访达里选中。
+async function revealOut(url){
+  try{
+    const r = await fetch('/api/local/path?url='+encodeURIComponent(url));
+    const d = await r.json();
+    if(d.path) await window.pywebview.api.reveal(d.path);
+    else addNote('找不到这个文件', true);
+  }catch(e){ addNote('打不开访达', true); }
 }
 
 function drawList(){
@@ -399,7 +668,7 @@ function drawList(){
             alt="" loading="lazy" onerror="this.style.visibility='hidden'">
        <span class="meta">
          <span class="t">${esc(shotLabel(v))}</span>
-         <span class="s">${mmss(v.duration)} · ${v.width}×${v.height}</span>
+         <span class="s">${esc(shortName(v.name))} · ${mmss(v.duration)}</span>
        </span>
        ${multiMode?'<span class="ck">✓</span>':''}`);
     b.setAttribute('role','option');
@@ -518,7 +787,43 @@ function blank(ic,msg,sub){
     ${sub?`<div class="sub">${sub}</div>`:''}</div>`;
 }
 
+// 一个视频都没有时，工作台上的东西全是空的（顺序、主题、播放器都没意义）。
+// 所以首屏只留一件事：把视频放进来。分析完再进工作台。
+function landing(){
+  document.body.dataset.view='landing';
+  $('#stage').innerHTML = `
+    <div class="hero">
+      <div class="hero-ball" aria-hidden="true">
+        <span class="ball"></span><span class="ball-shadow"></span>
+      </div>
+      <h1>${t('heroTitle')}</h1>
+      <p class="hero-sub">${t('heroSub')}</p>
+      <label class="hero-drop" id="herodrop">
+        <div class="hero-ic">↑</div>
+        <div class="hero-cta">${t('heroCta')}</div>
+        <div class="hero-hint">${isApp()?t('heroHintApp'):t('heroHint')}</div>
+      </label>
+      <div id="heroprog"></div>
+      <p class="hero-quota" id="heroquota"></p>
+    </div>`;
+  // 复用侧栏那个 <input type=file>，上传逻辑只有一份
+  $('#herodrop').onclick = () => $('#file').click();
+  const S=$('#stage');
+  ['dragenter','dragover'].forEach(k=>S.addEventListener(k,e=>{
+    e.preventDefault(); $('#herodrop')?.classList.add('over'); }));
+  ['dragleave','drop'].forEach(k=>S.addEventListener(k,e=>{
+    e.preventDefault(); $('#herodrop')?.classList.remove('over'); }));
+  S.addEventListener('drop', e => uploadAll(e.dataTransfer.files));
+  paintQuota();
+}
+function paintQuota(){
+  const box=$('#heroquota'); if(!box || !me) return;
+  box.textContent = me.left==null ? '' : t('quotaLeft', me.left, me.quota);
+}
+
 function choose(i, add){
+  setStatus(null);          // 换素材了，上一次的完成提示就过期了
+  pauseSource();            // 旧素材可能正在放，换之前先停
   const v = videos[i];
   if(add){
     if(sel.includes(v.id)){
@@ -544,6 +849,13 @@ function picked(){ return sel.map(id=>videos.find(v=>v.id===id)).filter(Boolean)
 // 素材的主标签用拍摄时间，不用文件名。
 // 文件名基本都是 dc393956ce8c… 这类哈希，用户分不出哪段是哪段；
 // 而「7月27日 15:53」立刻能对上是哪次训练。
+// 同一堂课分段录的素材，拍摄时间可能只差几分钟（实测两条是 09:10 和 09:22），
+// 一列看下来几乎一样。文件名原来只在 tooltip 里 —— 那要悬停才看得到。
+// 分辨率移到右侧面板去了，这里让位给文件名。
+function shortName(n){
+  const base = String(n||'').replace(/\.[^.]+$/,'');
+  return base.length > 22 ? base.slice(0,10)+'…'+base.slice(-8) : base;
+}
 function shotLabel(v){
   if(!v.shot_at) return v.name;
   const d = new Date(v.shot_at*1000);
@@ -587,11 +899,14 @@ $('#multi').onclick = ()=>{
 /* 原生菜单里只留「播放速度」：下载在卡片上已有独立入口，重复了。
    #t=0.5 让浏览器解码并显示首帧 —— 否则 preload=metadata 下播放器是一片纯黑，
    看起来像加载失败。 */
+// 源片预览的任务只是「确认是这段素材」，不是观看 —— 它高一点，
+// 下面的主题条和「开始剪辑」就掉出首屏（实测竖屏 380 时主题条在 1007px，
+// 而可视区只有 800）。成片播放器不受这里影响，它单独更高。
 function player(src, portrait){
   const poster = src + (src.includes('#') ? '' : '#t=0.5');
   return `<div class="player"><video src="${poster}" controls
     controlslist="nodownload noremoteplayback" disablepictureinpicture
-    preload="metadata" style="max-height:${portrait?380:300}px"></video></div>`;
+    preload="metadata" style="max-height:${portrait?300:260}px"></video></div>`;
 }
 
 function draw(){
@@ -600,15 +915,8 @@ function draw(){
   const v = multi ? P[0] : cur;
   const portrait=v.height>v.width;
   const total = P.reduce((a,x)=>a+x.duration, 0);
-  $('#stage').innerHTML = `
-    <div class="two">
-      <div class="col-main">
-        ${multi ? `
-        <div class="card">
-          <div class="card-hd"><h3>${t('order')}</h3>
-            <span class="who">${reordered?t('orderManual'):t('orderAuto')}</span></div>
-          <div class="card-pad"><div class="ord" id="ord"></div></div>
-        </div>` : ''}
+  // 单选走单栏（画面在上、主题在下），多选才分两栏 —— 那时左栏有顺序条，撑得起来
+  const themeCard = `
         <div class="card">
           <div class="card-hd"><h3>${t('theme')}</h3>${multi
             ? `<span class="who">${t('multiSel')
@@ -620,26 +928,50 @@ function draw(){
             <div class="desc" id="desc"></div>
             <div style="margin-top:20px"><button class="btn" id="go">${t('go')}</button></div>
           </div>
-        </div>
-      </div>
-      <div class="col-side">
+        </div>`;
+  // 「质量评分」去掉了：那是个启发式分数（100 分减去分辨率/帧率/竖屏各扣几分），
+  // 不是测出来的东西，和已经下线的拍数、回合数是同一类。下面那条提示已经把
+  // 该说的说清楚了（「分辨率偏低，不影响剪得准不准」），分数只是多一层噪音。
+  // 时长和分辨率压成一行小字，不再用大数字块：这两个数侧栏列表每一条上
+  // 已经写着了，在这儿用 17px 粗体重复一遍只是占位置 —— 实测那两块加上
+  // 质量提示占了播放器卡片 604px 中的近 200px，把「开始剪辑」顶出首屏。
+  // 挡路的问题（没音轨）仍然单独用警告条，那个必须显眼。
+  const n = noteOf(v);
+  const playerCard = `
         <div class="card">
           ${player('/source?id='+v.id, portrait)}
           ${multi ? `<div class="nowplay" id="nowplay"></div>` : ''}
-          <div class="metrics">
-            <div class="metric"><b>${mmss(multi?total:v.duration)}</b><span>${
-              multi ? t('durationAll') : t('duration')}</span></div>
-            <div class="metric"><b>${v.width}×${v.height}</b><span>${t('resolution')}</span></div>
-            <div class="metric"><b>${v.quality}</b><span>${t('quality')}</span></div>
+          <div class="factline">
+            <b>${mmss(multi?total:v.duration)}</b>
+            <span>${multi ? t('durationAll') : t('duration')}</span>
+            <i></i><b>${v.width}×${v.height}</b>
+            ${n && !n.blocking ? `<i></i><span class="fact-note" title="${esc(n.text)}">ⓘ ${esc(n.text)}</span>` : ''}
           </div>
-          ${(n => n ? `<div class="card-pad" style="padding-top:16px">
-                 <div class="alert${n.blocking?'':' info'}">
-                   <span>${n.blocking?'⚠':'ⓘ'}</span><span>${esc(n.text)}</span>
-                 </div></div>` : '')(noteOf(v))}
-        </div>
-      </div>
-    </div>
-    <div id="out"></div>`;
+          ${n && n.blocking ? `<div class="card-pad" style="padding-top:0">
+                 <div class="alert"><span>⚠</span><span>${esc(n.text)}</span></div></div>` : ''}
+        </div>`;
+  const orderCard = !multi ? '' : `
+        <div class="card">
+          <div class="card-hd"><h3>${t('order')}</h3>
+            <span class="who">${reordered?t('orderManual'):t('orderAuto')}</span></div>
+          <div class="card-pad"><div class="ord" id="ord"></div></div>
+        </div>`;
+  // 剪完之后成片才是主角，所以 #cut 放在最前面 —— 它会占据原片播放器的位置。
+  // 原片卡片包在 #srcwrap 里，出片后收起（还能用「原片」开关调回来）。
+  // 主题条留在成片下方：换个主题重剪是出片后最常见的下一步。
+  // #out 留给分析说明和反馈汇总这类次要信息，继续排在最后。
+  // 一律单栏，顺序：画面 → 素材顺序 → 主题。
+  // 素材顺序紧跟播放器，因为它**就是这个播放器的播放列表** ——
+  // 上面在「连续播放 1/3」，下面标着哪段是 1/2/3、拖动能改顺序，
+  // 两者分在左右两栏时，改顺序要在两边来回看。
+  // 原来多选走两栏是为了填满左栏，但那和单选不一致（单选已经是单栏），
+  // 而且顺序条挪走之后左栏只剩主题卡片，照样是一大片空。
+  $('#stage').innerHTML =
+    `<div id="cut"></div>`
+    + `<div class="one"><div id="srcwrap">${playerCard}${orderCard}</div>${themeCard}</div>`
+    + `<div id="out"></div>`;
+  document.body.dataset.cut = '';
+  document.body.dataset.multi = multi ? '1' : '';
 
   const all=[{id:'auto',name:t('auto'),name_en:t('auto'),
     desc:t('autoDesc'),desc_en:t('autoDesc')}, ...themes];
@@ -654,11 +986,7 @@ function draw(){
       paintDesc(); };
     C.appendChild(b);
   });
-  // 用 ResizeObserver 而不是 window resize 监听：draw() 每次重建 #chips，
-  // 挂在 window 上的监听不会被回收，点几次主题就攒一堆。
-  const fade=()=>C.classList.toggle('more',
-    C.scrollWidth - C.scrollLeft - C.clientWidth > 4);
-  C.onscroll=fade; new ResizeObserver(fade).observe(C); fade();
+  // 换行之后不再有「看不见的溢出」，原来那套 ResizeObserver 渐隐可以去掉
   drawOrder();
   wirePlaylist();
   paintDesc();
@@ -668,7 +996,8 @@ function draw(){
 
 async function start(){
   $('#go').disabled = true;
-  $('#out').innerHTML = `<div class="card"><div class="card-pad">
+  pauseSource();                 // 开始剪了，原片没必要继续响
+  $('#cut').innerHTML = `<div class="card"><div class="card-pad">
       <div class="run"><span class="spin"></span><span id="st">${t('submitting')}</span>
         <span id="pctn" class="pctn"></span></div>
       <div class="bar"><i id="barfill"></i></div></div></div>`;
@@ -682,6 +1011,8 @@ async function start(){
   poll = setInterval(async ()=>{
     let j; try{ j = await fetch('/api/jobs/'+r.id).then(x=>x.json()); }catch(e){ return; }
     const st=$('#st'); if(st) st.textContent = j.stage;
+    setStatus('run', `<span class="spin dot"></span><span>${esc(j.stage||'')}</span>${
+      j.percent!=null ? `<b>${Math.round(j.percent)}%</b>` : ''}`);
     // 有百分比就画，没有就只留转圈 —— 管线里数不出来的阶段不编数字
     const f=$('#barfill'), n=$('#pctn');
     if(f && j.percent!=null){ f.style.width = j.percent+'%'; }
@@ -691,9 +1022,35 @@ async function start(){
   }, 600);
 }
 
+// **隐藏 <video> 不会让它停下来。** display:none 只是不画，声音照放，
+// 多选时连播还会继续跳下一段 —— 剪完之后原片在背景里继续响，
+// 用户以为是成片在放。所以收起原素材之前必须显式停掉，
+// 并且解掉 onended，否则它还会自己换 src 接着播。
+function pauseSource(){
+  const w = $('#srcwrap'); if(!w) return;
+  w.querySelectorAll('video').forEach(v => {
+    v.onended = null;
+    try{ v.pause(); }catch(_){}
+  });
+}
+
+// 顶栏状态：剪辑中显示阶段，剪完显示成片信息并可点击回到结果。
+// 成功提示不自动消失 —— 它同时是「跳到成片」的入口，消失了就得自己去找。
+let statusHide=null;
+function setStatus(mode, html, onClick){
+  const b=$('#status'); if(!b) return;
+  clearTimeout(statusHide);
+  if(!mode){ b.removeAttribute('data-on'); b.innerHTML=''; b.onclick=null; return; }
+  b.dataset.on = mode;
+  b.innerHTML = html;
+  b.onclick = onClick || null;
+  if(mode==='fail') statusHide = setTimeout(()=>setStatus(null), 8000);
+}
+
 function fail(msg){
   $('#go').disabled=false;
-  $('#out').innerHTML = `<div class="card"><div class="card-pad">
+  setStatus('fail', `<span class="dot">⚠</span><span>${t('failed')}</span>`);
+  $('#cut').innerHTML = `<div class="card"><div class="card-pad">
     <div class="alert"><span>⚠</span><span>${t('failed')}: ${esc(msg)}</span></div></div></div>`;
 }
 
@@ -704,9 +1061,10 @@ function done(j){
   // （最差 68%：5fa9db9e 检测流算 28.3 秒、真值 75.7 秒）。
   // 它是在一个 75% 是误报的流上算的，本来就不可能准。
   // 结构是分类而不是数字，7 个视频（含 2 个留出）都判对了，而且它决定推荐哪个主题。
-  let h = `<div class="card"><div class="card-pad">
+  const tail = `<div class="card"><div class="card-pad">
       <div class="note">${t('kindNote', k.kind==='sparse'?t('sparse'):t('dense'))}</div>
     </div></div>`;
+  let h = '';
 
   // 「自动」会出两条：精华（当场看）和完整版（存档）。
   // 平级并排会逼用户做一次没必要的选择，而且两个播放器堆在一起很重 ——
@@ -741,7 +1099,9 @@ function done(j){
         <span style="display:flex;gap:8px;align-items:center">
           ${fold?`<span class="caret">▸</span>`:
             `<button class="mark" data-mark="${idx}" aria-pressed="false">${t('del')}</button>`}
-          <a class="btn ghost" href="${r.url}" download>${t('download')}</a>
+          ${isApp()
+            ? `<button class="btn ghost" data-reveal="${esc(r.url)}">${t('reveal')}</button>`
+            : `<a class="btn ghost" href="${r.url}" download>${t('download')}</a>`}
         </span>
       </div>
       ${rel}
@@ -762,10 +1122,33 @@ function done(j){
       </div>
     </div>`;
   });
-  h += `<div class="card"><div class="card-pad">
+  // 「原片」开关：成片顶掉了原片播放器，但比对和重剪时还得能调回来。
+  h += `<div class="srcline">
+      <button type="button" id="srctoggle">${t('showSrc')}</button></div>`;
+  $('#cut').innerHTML = h;
+  $('#out').innerHTML = tail + `<div class="card"><div class="card-pad">
       <div class="fb" id="fb"></div></div></div>`;
-  $('#out').innerHTML = h;
-  $('#out').querySelectorAll('[data-fold]').forEach(hd=>{
+  pauseSource();                 // 收起之前先停，否则藏起来还在放
+  document.body.dataset.cut = '1';
+  $('#srctoggle').onclick = e => {
+    const on = document.body.dataset.cut !== '1';
+    document.body.dataset.cut = on ? '1' : 'src';
+    e.target.textContent = on ? t('showSrc') : t('hideSrc');
+    if(on) pauseSource();        // 再次收起时同样要停
+    else $('#srcwrap').scrollIntoView({behavior:'smooth', block:'nearest'});
+  };
+  // 顶栏报完成。**不自动消失** —— 它同时是「跳到成片」的入口：
+  // 长素材剪完时用户往往已经滚到别处，有个常驻的锚点比让他自己找要好。
+  // 只报主成片，不求和。「自动」会出精华 + 完整版，而完整版本身就包含
+  // 精华那几段 —— 加起来是重复计数（实测一段 3.5 分钟素材报成「63 段」）。
+  // ordered 已经把主成片排在最前。
+  const main = ordered.find(r => !r.empty);
+  setStatus('done', !main
+    ? `<span class="dot">✓</span><span>${t('doneTop')}</span>`
+    : `<span class="dot">✓</span><span>${esc(LANG==='en'?(main.name_en||main.name):main.name)}</span><b>${
+        main.clips} ${t('doneClips')} · ${mmss(main.seconds)}</b>`,
+    () => $('#cut').scrollIntoView({behavior:'smooth', block:'start'}));
+  $('#cut').querySelectorAll('[data-fold]').forEach(hd=>{
     hd.style.cursor='pointer';
     hd.onclick = e => {
       if(e.target.closest('a')) return;      // 下载键不该顺带展开
@@ -780,10 +1163,10 @@ function done(j){
   // 「这段不对」：只声明这个区间没有有效击球，不要求用户精确到某一拍。
   // 这正是重排器要的监督信号 —— 区间内所有候选都是可信负例。
   // 「标记问题」进入编辑态才显示 ✕
-  $('#out').addEventListener('click', e => {
+  $('#cut').addEventListener('click', e => {
     const m = e.target.closest('.mark');
     if(!m) return;
-    const segs = $('#out').querySelector(`.segs[data-idx="${m.dataset.mark}"]`);
+    const segs = $('#cut').querySelector(`.segs[data-idx="${m.dataset.mark}"]`);
     const on = segs.dataset.edit === '1';
     segs.dataset.edit = on ? '' : '1';
     m.setAttribute('aria-pressed', on ? 'false' : 'true');
@@ -793,7 +1176,7 @@ function done(j){
       : t('delHint');
   });
 
-  $('#out').addEventListener('click', async e => {
+  $('#cut').addEventListener('click', async e => {
     const a = e.target.closest('a.rej');
     if(!a) return;
     e.preventDefault();
@@ -808,10 +1191,10 @@ function done(j){
     const hd = card.querySelector('.card-hd h3');
     hd.dataset.busy = '1';
     try{
-      // 删除 = 立刻从成片拿掉 + 记成负例，一个动作两件事
-      await fetch('/api/feedback',{method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({video:cur.id, start:+a.dataset.s, end:+a.dataset.e})});
+      // **删除本身不再记负例。** 原来是「删了就当作这段没在打球」，
+      // 但用户删一段的原因可能只是想剪短，那段其实打得好好的。
+      // 把真实回合当负例喂回去会反向污染模型，而且是所有用户一起污染 ——
+      // 所以改成删完再问一句，只有明确说「没在打球」才回流。
       const keep = [...segs.querySelectorAll('.seg')]
         .filter(x => x.dataset.rejected !== '1').map(x => +x.dataset.sid);
       const r = await fetch('/api/recut',{method:'POST',
@@ -822,15 +1205,40 @@ function done(j){
         const v = card.querySelector('video');
         v.src = r.url; v.load();
         hd.textContent = hd.textContent.replace(/· .*$/, `· ${r.clips} 段 / ${r.seconds} 秒`);
-        seg.remove();
+        askWhy(seg, +a.dataset.s, +a.dataset.e);
       }
       loadFeedback();
     }catch(err){ seg.dataset.rejected=''; }
     finally{ hd.dataset.busy=''; }
   });
 
+  // 删完问一句「为什么」。**不阻塞、默认不回流** —— 不点就当成「只是不想要」，
+  // 宁可少收数据也不能收含义不明的数据。只有明确说「没在打球」才算负例，
+  // 那是我们唯一能确信的标签。
+  function askWhy(seg, start, end){
+    seg.dataset.rejected = '1';
+    seg.innerHTML = `<div class="why">
+        <span>${t('whyAsk')}</span>
+        <button type="button" class="why-yes">${t('whyYes')}</button>
+        <button type="button" class="why-no">${t('whyNo')}</button>
+      </div>`;
+    const close = () => seg.remove();
+    seg.querySelector('.why-no').onclick = close;
+    seg.querySelector('.why-yes').onclick = async () => {
+      seg.querySelector('.why').innerHTML = `<span>${t('whyThanks')}</span>`;
+      try{
+        await fetch('/api/feedback',{method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({video:cur.id, start, end, verdict:'not_playing'})});
+        loadFeedback();
+      }catch(_){}
+      setTimeout(close, 1600);
+    };
+    setTimeout(() => { if(seg.isConnected) close(); }, 12000);
+  }
+
   // 点片段 -> 主播放器跳到该片段在拼接成片里的位置
-  $('#out').querySelectorAll('.seg button').forEach(b=>{
+  $('#cut').querySelectorAll('.seg button').forEach(b=>{
     b.onclick = ()=>{
       const wrap = b.closest('.segs');
       const v = wrap.previousElementSibling.querySelector('video');
@@ -841,7 +1249,7 @@ function done(j){
     };
   });
   // 播放过程中高亮当前片段
-  $('#out').querySelectorAll('.card video').forEach(v=>{
+  $('#cut').querySelectorAll('.card video').forEach(v=>{
     const wrap = v.closest('.card').querySelector('.segs');
     if(!wrap) return;
     const offs = [...wrap.querySelectorAll('.seg button')].map(b=>parseFloat(b.dataset.off));
@@ -894,6 +1302,7 @@ function upload(f, done){
         setTimeout(()=>$('#prog').innerHTML='', 2600);
       }else{
         videos.push(v); drawList();
+        document.body.dataset.view='';        // 首屏让位给工作台
         // 多选模式下新导入的素材应该加进选择，而不是把已选的全顶掉
         choose(videos.length-1, multiMode);
       }
@@ -912,6 +1321,226 @@ function upload(f, done){
 async function uploadAll(files){
   for(const f of [...files]) await new Promise(done => upload(f, done));
 }
+
+// ── 按需下载的模型 ────────────────────────────────────────
+// 323MB 的声学模型不进安装包，第一次要用时才下。
+// 服务端在导入和剪辑两个入口都会返回 424，这里统一接住并弹下载 ——
+// **不降级继续跑**：没有模型时检测准确率从 0.68 掉到 0.38，
+// 而且乒乓球门禁会放行一切，两者都不报错，只让成片悄悄变差。
+let dlPoll = null;
+
+// **一次只开一个面板。** 两个面板都是 .sheet、同一个 z-index，
+// 同时打开时谁盖谁是未定义的（实际截图里就出现了下载面板被设置面板压住，
+// 而下载面板是挡路的、不该被盖掉）。所有开关都走这里。
+function openSheet(id){
+  document.querySelectorAll('.sheet').forEach(s => { s.hidden = (s.id !== id); });
+}
+function closeSheets(){
+  document.querySelectorAll('.sheet').forEach(s => { s.hidden = true; });
+}
+
+async function needAssets(detail){
+  const st = await fetch('/api/assets').then(r=>r.json()).catch(()=>null);
+  const a = st && st.assets && st.assets.find(x=>!x.ready);
+  // 下载是挡路的要求，优先级高于设置 —— 它一出现就把别的面板关掉
+  openSheet('dl');
+  $('#dl-t').textContent = t('dlTitle');
+  $('#dl-d').textContent = detail || (a ? t('dlDesc', a.note, a.mb) : '');
+  $('#dl-bar').hidden = true;
+  const go = $('#dl-go');
+  if(a && !a.configured){
+    // 没配下载地址是我们的问题，别让用户对着一个点了没反应的按钮
+    go.hidden = true;
+    $('#dl-msg').textContent = t('dlNoUrl');
+    return;
+  }
+  go.hidden = false;
+  go.disabled = false;
+  go.textContent = t('dlGo');
+  $('#dl-msg').textContent = '';
+  go.onclick = async () => {
+    go.disabled = true;
+    $('#dl-bar').hidden = false;
+    try{
+      const r = await fetch('/api/assets/fetch', {method:'POST'});
+      if(!r.ok){ $('#dl-msg').textContent = (await r.json()).detail || t('dlFail');
+                 go.disabled = false; return; }
+      pollDownload();
+    }catch(e){ $('#dl-msg').textContent = t('dlFail'); go.disabled = false; }
+  };
+}
+
+function pollDownload(){
+  clearInterval(dlPoll);
+  dlPoll = setInterval(async () => {
+    let st; try{ st = await fetch('/api/assets').then(r=>r.json()); }catch(e){ return; }
+    const d = Object.values(st.downloading || {})[0];
+    if(d){
+      $('#dl-fill').style.width = (d.percent||0) + '%';
+      $('#dl-msg').textContent = d.state === 'error'
+        ? (t('dlFail') + '：' + (d.error||''))
+        : t('dlProgress', Math.round((d.done||0)/1e6), Math.round((d.total||0)/1e6));
+      if(d.state === 'error'){ clearInterval(dlPoll); $('#dl-go').disabled = false; }
+    }
+    if(st.ready){
+      clearInterval(dlPoll);
+      $('#dl-msg').textContent = t('dlDone');
+      setTimeout(()=>{ $('#dl').hidden = true; }, 1200);
+    }
+  }, 700);
+}
+
+// ── 设置：反馈回流 ────────────────────────────────────────
+// **默认关闭，而且要在同意之前就把要发什么摆清楚。**
+// 回传的是嵌入（每秒一个 2048 维向量），不是音频也不是画面 ——
+// 但我不写「无法还原」：嵌入反演在别的模型上有过成功案例，
+// 我只能说据我所知没有可行的方法，所以这件事必须用户明确同意。
+async function loadPrefs(){
+  // 静态说明先渲染。**不要等接口成功才填** —— 接口挂掉时如果直接 return，
+  // 用户看到的是一个什么都没有的空壳，比一句错误提示更让人摸不着头脑。
+  $('#pref-d').textContent = t('prefDesc');
+  $('#will').innerHTML = t('prefWill').map(x=>`<li>${esc(x)}</li>`).join('');
+  $('#wont').innerHTML = t('prefWont').map(x=>`<li>${esc(x)}</li>`).join('');
+  const yes=$('#contrib-toggle'), no=$('#contrib-send');
+  yes.hidden = no.hidden = true;
+  $('#contrib-msg').textContent = '';
+
+  let d;
+  try{ d = await fetch('/api/contrib').then(r=>r.json()); }
+  catch(e){ $('#pref-stat').textContent = t('prefUnavailable'); return; }
+
+  $('#pref-stat').textContent = d.pending
+    ? t('prefPending', d.pending, d.candidates, d.kb)
+    : t('prefEmpty');
+
+  const setOn = async (on) => {
+    await fetch('/api/contrib/optin', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({on})});
+  };
+
+  if(!d.on){
+    // 关着的时候是一次明确的二选一：同意，或者跳过。
+    // 不做成一个默默躺着的开关 —— 那样多数人既不会打开也不知道有这回事，
+    // 而这件事的默认值必须是「不发」，所以得让它至少被看见一次。
+    yes.hidden = no.hidden = false;
+    yes.textContent = t('prefAgree');
+    yes.classList.remove('ghost');
+    no.textContent  = t('prefSkip');
+    no.classList.add('ghost');
+    yes.onclick = async () => {
+      yes.disabled = no.disabled = true;
+      try{
+        await setOn(true);
+        if(d.pending && d.endpoint){
+          $('#contrib-msg').textContent = t('prefSending');
+          const r = await fetch('/api/contrib/send', {method:'POST'});
+          const j = await r.json();
+          $('#contrib-msg').textContent = r.ok
+            ? t('prefSent', j.sent, j.kb) : (j.detail || t('prefFail'));
+        }
+        await loadPrefs();
+      }finally{ yes.disabled = no.disabled = false; }
+    };
+    no.onclick = () => { closeSheets(); };
+  }else{
+    // 已经同意过：只留一个关闭入口，外加「现在发送」（有待发且配了收集端时）
+    yes.hidden = false;
+    yes.textContent = t('prefOff');
+    yes.classList.add('ghost');
+    yes.onclick = async () => {
+      yes.disabled = true;
+      try{ await setOn(false); await loadPrefs(); }finally{ yes.disabled = false; }
+    };
+    no.hidden = !(Number(d.pending) > 0 && Boolean(d.endpoint));
+    no.textContent = t('prefSend');
+    no.classList.remove('ghost');
+    no.onclick = async () => {
+      no.disabled = true;
+      $('#contrib-msg').textContent = t('prefSending');
+      try{
+        const r = await fetch('/api/contrib/send', {method:'POST'});
+        const j = await r.json();
+        $('#contrib-msg').textContent = r.ok
+          ? t('prefSent', j.sent, j.kb) : (j.detail || t('prefFail'));
+        if(r.ok) await loadPrefs();
+      }catch(e){ $('#contrib-msg').textContent = t('prefFail'); }
+      finally{ no.disabled = false; }
+    };
+    if(d.pending && !d.endpoint) $('#contrib-msg').textContent = t('prefNoEndpoint');
+  }
+}
+
+$('#prefs').onclick = () => { openSheet('sheet'); loadPrefs(); };
+$('#sheet-x').onclick = closeSheets;
+$('#sheet').onclick = e => { if(e.target.id === 'sheet') closeSheets(); };
+// 下载面板不给点背景关闭 —— 它是必须完成的一步，不是可以随手划走的提示。
+// Esc 只关设置。
+document.addEventListener('keydown', e => {
+  if(e.key === 'Escape' && !$('#sheet').hidden) closeSheets();
+});
+
+// ── 桌面版 ────────────────────────────────────────────────
+// 装在 app 里跑时走这条：素材**按原路径登记，一个字节都不拷贝**。
+// 浏览器的 <input type=file> 只能给到文件内容、拿不到路径，
+// 所以选文件必须交给原生侧（见 app_main.py 的 Bridge.pick_videos）。
+const isApp = () => !!(window.pywebview && window.pywebview.api);
+
+function addNote(msg, warn){
+  $('#prog').innerHTML = `<div class="note" style="padding:0 16px 10px${
+    warn?';color:var(--warn)':''}">${esc(msg)}</div>`;
+  setTimeout(()=>{ $('#prog').innerHTML=''; }, 4200);
+}
+
+// 供原生侧在拖放之后回调 —— 拖放事件在 Python 那边处理（只有它拿得到路径）
+async function addLocal(paths){
+  if(!paths || !paths.length) return;
+  const txt=$('#uptxt'); const was=txt.textContent; txt.textContent=t('uploading');
+  try{
+    const r = await fetch('/api/local/add', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({paths})});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.detail||'导入失败');
+    const got=[];
+    for(const v of (d.added||[])){
+      const at = videos.findIndex(x=>x.id===v.id);
+      if(at>=0){ got.push(at); } else { videos.push(v); got.push(videos.length-1); }
+    }
+    drawList();
+    if(got.length){
+      document.body.dataset.view='';
+      // **一次选进来多个 = 默认当成一组。** 一次挑五个文件几乎只有一个意思：
+      // 这是同一堂课分的几段，要接成一个成片。原来只选中最后一个，
+      // 用户还得自己去开多选、再逐个点回来 —— 那是把已经表达清楚的意图
+      // 又推回给他重做一遍。
+      if(got.length > 1){
+        multiMode = true;
+        sel = got.map(i=>videos[i].id);
+        reordered = false;        // 新的一组，回到按拍摄时间排
+        sortSel();
+        cur = picked()[0];
+        [...$('#list').children].forEach((e,j)=>
+          e.setAttribute('aria-selected', sel.includes(videos[j].id)?'true':'false'));
+        syncMulti();
+        draw();
+      } else {
+        choose(got[0], multiMode);
+      }
+    }
+    if(d.failed && d.failed.length)
+      addNote(d.failed.map(b=>`${b.name}：${b.why}`).join('；'), true);
+  }catch(e){ addNote(e.message||'导入失败', true); }
+  finally{ txt.textContent = was; }
+}
+window.addLocal = addLocal;          // Python 侧拖放后调它
+
+async function pickLocal(){
+  try{
+    const paths = await window.pywebview.api.pick_videos();
+    await addLocal(paths);
+  }catch(e){ addNote('打不开文件选择器', true); }
+}
+
 $('#file').onchange = e => { uploadAll(e.target.files); e.target.value=''; };
 const S=$('#side');
 ['dragenter','dragover'].forEach(k=>S.addEventListener(k,e=>{
@@ -924,11 +1553,18 @@ function applyLang(){
   document.documentElement.lang = LANG==='zh' ? 'zh-CN' : 'en';
   $('#lang').textContent = LANG==='zh' ? 'EN' : '中';
   $('#tagline').textContent = t('tagline');
-  $('#lbl-videos').textContent = t('videos');
   $('#uptxt').textContent = t('pick');
   syncMulti();
   drawList();
-  if(cur) draw(); else blank('▤', t('blank'), t('blankSub'));
+  // 必须先判首屏。首屏把侧栏藏了（那时候列表是空的，没东西可列），
+  // 唯一的导入入口就是首屏中间那块。这里要是直接 blank()，
+  // 就把它盖成了空态文案，而侧栏还藏着 —— 两个导入入口一起没了，
+  // 新用户第一次打开就是死路。boot().then(applyLang) 保证了每次
+  // 冷启动都会走到这儿，所以这条不是边角情况。
+  if(document.body.dataset.view === 'landing') landing();
+  else if(cur) draw();
+  else if(videos.length) choose(0);
+  else blank('▤', t('blank'), t('blankSub'));
 }
 $('#lang').onclick = ()=>{
   LANG = LANG==='zh' ? 'en' : 'zh';

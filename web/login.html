@@ -1,54 +1,85 @@
 <!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Pipo AI</title>
-<style>
-:root{--bg:#f7f7f6;--surface:#fff;--line:#e8e6e3;--line-2:#d6d3cf;
-  --ink:#18181b;--ink-2:#52525b;--ink-3:#8b8782;--accent:#2563eb;--on-accent:#fff;
-  --warn:#b45309;--warn-wash:#fffbeb}
-@media (prefers-color-scheme:dark){:root{--bg:#0f1012;--surface:#17181b;
-  --line:#26282c;--line-2:#34373c;--ink:#f4f4f5;--ink-2:#a1a1aa;--ink-3:#71717a;
-  --accent:#5b8dff;--on-accent:#0b1220;--warn:#f0b429;--warn-wash:#1f1a0e}}
-*{box-sizing:border-box}
-body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);
-  color:var(--ink);font:15px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC",
-  "Segoe UI","Helvetica Neue",sans-serif;-webkit-font-smoothing:antialiased}
-.box{width:min(400px,92vw);background:var(--surface);border:1px solid var(--line);
-  border-radius:14px;padding:32px;box-shadow:0 1px 2px rgba(0,0,0,.04),0 8px 28px rgba(0,0,0,.06)}
-.logo{width:34px;height:34px;border-radius:9px;background:var(--accent);
-  display:grid;place-items:center;color:var(--on-accent);font-size:18px;font-weight:700;
-  margin-bottom:18px}
-h1{margin:0 0 6px;font-size:18px;font-weight:640;letter-spacing:-.01em}
-p{margin:0 0 22px;font-size:13px;color:var(--ink-3);line-height:1.6}
-input{width:100%;border:1px solid var(--line-2);background:transparent;color:var(--ink);
-  border-radius:10px;padding:11px 13px;font:inherit;font-size:14px;outline:0;
-  transition:border-color .12s}
-input:focus{border-color:var(--accent)}
-button{width:100%;margin-top:12px;border:0;border-radius:10px;padding:11px;
-  background:var(--accent);color:var(--on-accent);font:inherit;font-size:14px;
-  font-weight:560;cursor:pointer;transition:filter .12s}
-button:hover{filter:brightness(1.08)}
-.err{background:var(--warn-wash);color:var(--warn);font-size:12.5px;padding:9px 13px;
-  border-radius:8px;margin-bottom:16px}
-.hint{margin:18px 0 0;font-size:12px;color:var(--ink-3)}
-</style>
+<title>Pipo AI · 开始使用</title>
+<link rel="stylesheet" href="/auth.css">
+<!-- 这一页只做一件事：拿着邀请码进去。
+     「没有码怎么办」是另一个意图，挪到 claim.html。
+     原来两个表单挤在一页里，两个提交按钮谁也不比谁显眼，
+     而顶部那一条错误提示既可能在说邀请码也可能在说邮箱。 -->
 <div class="box">
-  <div class="logo">P</div>
-  <h1>Pipo AI</h1>
-  <p id="sub">Your table tennis highlights, automatically</p>
-  <div class="err" id="err" hidden>邀请码无效或已失效 · Invalid invite code</div>
-  <form onsubmit="go(event)">
-    <input id="t" placeholder="邀请码 / Invite code" autocomplete="off" autofocus>
-    <button type="submit">进入 · Enter</button>
+  <div class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none">
+    <path d="M2.6 19.2c3.4.2 7-1.4 9.6-4.3" stroke="currentColor" stroke-width="2.2"
+          stroke-linecap="round" opacity=".38"/>
+    <path d="M8.4 19.4c2.9-.6 5.5-2.5 7.3-5.2" stroke="currentColor" stroke-width="2.2"
+          stroke-linecap="round" opacity=".7"/>
+    <circle cx="18.4" cy="7.4" r="3.6" fill="currentColor"/>
+  </svg></div>
+  <h1>开始使用 Pipo</h1>
+  <p class="sub">把训练录像剪成集锦 · Turn practice footage into highlights</p>
+
+  <form onsubmit="go(event)" novalidate>
+    <div class="field">
+      <label for="code">邀请码 · Invite code</label>
+      <input id="code" autocomplete="off" autocapitalize="characters"
+             spellcheck="false" placeholder="例如 K7M2QX9PBRTC" autofocus>
+      <p class="msg" id="m-code"></p>
+    </div>
+    <div class="field">
+      <label for="name">怎么称呼你 · Your name</label>
+      <input id="name" autocomplete="nickname" maxlength="24" placeholder="可不填">
+    </div>
+    <button type="submit" id="btn">开始使用 · Start</button>
+    <p class="msg" id="m-form"></p>
   </form>
-  <p class="hint">内测阶段，需要邀请码。<br>Private beta — an invite code is required.</p>
+
+  <p class="alt">
+    还没有邀请码？<a href="/claim.html">领取一个 →</a><br>
+    <span style="opacity:.75">Need a code? <a href="/claim.html">Get one</a></span>
+  </p>
+  <p class="alt" style="border:0;padding-top:0;margin-top:10px;opacity:.7">
+    已经注册过？点你收到的那条链接即可，不用在这里填。<br>
+    Already registered? Just open the link you were sent.
+  </p>
+  <p class="foot">
+    <a href="https://x.com/laosji_net" target="_blank" rel="noopener">𝕏 @laosji_net</a>
+  </p>
 </div>
 <script>
+const $ = s => document.querySelector(s);
+function say(where, text){
+  $('#m-'+where).textContent = text || '';
+  if(where === 'code') $('#code').setAttribute('aria-invalid', text ? 'true' : 'false');
+}
+
+// 从领码页回来时把码带过来。走 sessionStorage 而不是查询串 ——
+// 邀请码是凭证，放进 URL 会留在历史记录里，也容易被整条链接转发出去。
+const carried = sessionStorage.getItem('pipo_code');
+if(carried){
+  $('#code').value = carried;
+  sessionStorage.removeItem('pipo_code');
+  $('#name').focus();
+}
 if(new URLSearchParams(location.search).has('bad'))
-  document.getElementById('err').hidden = false;
-function go(e){
+  say('form', '这条链接无效或已失效 · That link is no longer valid');
+
+async function go(e){
   e.preventDefault();
-  const v = document.getElementById('t').value.trim();
-  if(v) location.href = '/enter?t=' + encodeURIComponent(v);
+  say('code',''); say('form','');
+  const code = $('#code').value.trim().toUpperCase();
+  const name = $('#name').value.trim();
+  if(!code){ say('code','请填邀请码 · Enter your invite code'); $('#code').focus(); return; }
+  $('#btn').disabled = true;
+  try{
+    const r = await fetch('/api/signup', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({code, name})});
+    const d = await r.json();
+    if(!r.ok){ $('#btn').disabled = false; return say('code', d.detail || '注册失败'); }
+    location.href = '/';                 // cookie 已由服务端种好
+  }catch(_){
+    $('#btn').disabled = false;
+    say('form','网络不通，稍后再试 · Network error, try again');
+  }
 }
 </script>

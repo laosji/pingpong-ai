@@ -12,6 +12,7 @@ import numpy as np
 
 from . import (annotate, audio, ball, config, detect, evaluate, highlight, labels,
                motion, render, rerank, scene, stats, validate, viz)
+from .media import probe          # 搬到 media.py 了，这里重新导出保持兼容
 
 
 def _hits(path: str, cfg: Dict):
@@ -27,66 +28,6 @@ def _hits(path: str, cfg: Dict):
             print("  重排: %d -> %d 个候选（模型训练自 %d 份标注）"
                   % (before, len(hits), len(model["files"])))
     return hits, audio.hit_amplitudes(hits, env, fr)
-
-
-def probe(path: str) -> Dict:
-    """对应方案「模块二：视频质量检测」。"""
-    out = subprocess.run(
-        ["ffprobe", "-v", "error", "-print_format", "json",
-         "-show_format", "-show_streams", path],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    info = json.loads(out.stdout or b"{}")
-    v = next((s for s in info.get("streams", []) if s["codec_type"] == "video"), None)
-    a = next((s for s in info.get("streams", []) if s["codec_type"] == "audio"), None)
-    if v is None:
-        raise RuntimeError("没有视频流: %s" % path)
-
-    num, _, den = v.get("r_frame_rate", "0/1").partition("/")
-    fps = float(num) / float(den or 1)
-    w, h = int(v["width"]), int(v["height"])
-    duration = float(info.get("format", {}).get("duration", 0.0))
-
-    # 提示要给结论，不能只报参数。我们靠**击球声**判断回合，所以分辨率、
-    # 帧率、方向都不影响剪辑准确度，只影响成片观感；只有没音轨是致命的。
-    # 旧文案把这些一视同仁地扣分，一段完全能剪的素材会显示 55 分，
-    # 让用户以为结果会很差。
-    notes, notes_en = [], []
-    score, blocking = 100, False
-    if a is None:
-        score -= 70
-        blocking = True
-        notes.append("没有音轨 —— 我们靠击球声判断回合，这段没法自动剪")
-        notes_en.append("No audio track — rallies are detected from hit sounds, "
-                        "so this clip can't be edited automatically")
-    if min(w, h) < 720:
-        score -= 8
-        notes.append("分辨率 %d×%d 偏低 —— 不影响剪得准不准（靠声音判断），"
-                     "只是成片清晰度一般" % (w, h))
-        notes_en.append("Low resolution (%d×%d) — detection is audio-based and "
-                        "unaffected; only the output looks softer" % (w, h))
-    if fps < 25:
-        score -= 5
-        notes.append("帧率 %.0f fps 偏低 —— 同样不影响剪辑，只影响画面流畅度" % fps)
-        notes_en.append("Low frame rate (%.0f fps) — also doesn't affect the edit, "
-                        "only smoothness" % fps)
-    if h > w:
-        score -= 5
-        notes.append("竖屏拍摄 —— 不影响剪辑；和横屏素材一起剪时会自动加黑边对齐")
-        notes_en.append("Portrait video — fine to edit; it gets letterboxed "
-                        "automatically when combined with landscape clips")
-    if duration < 120:
-        notes.append("不到 2 分钟，像是已经剪过的片子 —— 能剪，但可压缩的空间不多")
-        notes_en.append("Under 2 minutes — looks already edited; there may not be "
-                        "much idle time left to cut")
-
-    return {
-        "path": path, "width": w, "height": h, "fps": round(fps, 2),
-        "duration": round(duration, 2), "has_audio": a is not None,
-        "quality_score": max(0, score),
-        "blocking": blocking,
-        "recommendation": "；".join(notes) or "素材没问题，可以直接剪",
-        "recommendation_en": "; ".join(notes_en) or "Good to go",
-    }
 
 
 def analyze(path: str, cfg: Dict, out_dir: str, make_plot: bool = True) -> Dict:
@@ -162,8 +103,8 @@ def main(argv=None) -> int:
     p.add_argument("--top", type=int, help="highlight: 取前几个回合")
     p.add_argument("--minutes", type=float, help="highlight: 目标集锦时长（分钟）")
     p.add_argument("--type", default="auto",
-                   choices=["auto", "best", "longest", "weak", "power",
-                            "trim", "records", "all"],
+                   choices=["auto", "best", "longest", "power",
+                            "trim", "all"],
                    help="highlight: 集锦类型（对应方案模块七的四种）")
     args = p.parse_args(argv)
 
@@ -247,7 +188,7 @@ def main(argv=None) -> int:
                 kinds = ["trim"]      # 自动 = 完整版，与网页端/skill 保持一致
                 print("  自动 = 完整版：去掉捡球和等待，一个球都不漏")
             elif args.type == "all":
-                kinds = ["best", "longest", "weak", "power", "records"]
+                kinds = ["best", "longest", "power"]
             else:
                 kinds = [args.type]
                 # 用户手选了不适合这段素材的主题：不拒绝，但要说明会得到什么

@@ -1,16 +1,16 @@
 {
   "schema": 1,
-  "video": "/Users/duanchao/Downloads/PP-video/84530a20d2daa783f1c7fe2b20604da1.mp4",
+  "video": "84530a20d2daa783f1c7fe2b20604da1.mp4",
   "duration": 367.21,
   "complete": true,
   "complete_ranges": [
     [
-      120,
-      180
+      120.0,
+      180.0
     ],
     [
-      240,
-      300
+      240.0,
+      300.0
     ]
   ],
   "playing": [
@@ -406,5 +406,6 @@
     ]
   ],
   "hits": [],
-  "notes": ""
+  "notes": "",
+  "negative_ranges": []
 }

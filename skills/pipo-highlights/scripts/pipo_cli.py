@@ -4,9 +4,16 @@
 只用标准库，不依赖 Pipo 仓库：技能是独立安装的，装到用户机器上时
 身边不会有那个 repo。所有逻辑都在服务端 HTTP API 里，这里只是薄封装。
 
+两种连法，按顺序尝试：
+
+  1. **本机桌面版**（推荐，完全离线）—— Pipo.app 启动时会把自己的端口写到
+     ~/Library/Application Support/Pipo/port，这里自动读取。
+     本地模式没有鉴权，不需要令牌，整个过程不联网。
+  2. **远端服务** —— 设 PIPO_BASE_URL 和 PIPO_TOKEN。
+
 环境变量：
-    PIPO_TOKEN      必填，用户的访问令牌
-    PIPO_BASE_URL   选填，默认 http://127.0.0.1:8020
+    PIPO_BASE_URL   选填，显式指定服务地址（设了就不再找本机 app）
+    PIPO_TOKEN      连远端服务时必填；连本机桌面版时不需要
 
 用法：
     pipo_cli.py list
@@ -26,10 +33,36 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-BASE = os.environ.get("PIPO_BASE_URL", "http://127.0.0.1:8020").rstrip("/")
-TOKEN = os.environ.get("PIPO_TOKEN", "")
+def _local_port() -> str:
+    """读本机桌面版写下的端口。它每次启动随机取端口（固定端口会撞），
+    所以约定写到数据目录的 port 文件里。"""
+    for p in (os.path.expanduser("~/Library/Application Support/Pipo/port"),
+              os.path.expanduser("~/.local/share/Pipo/port")):
+        try:
+            with open(p, encoding="utf-8") as f:
+                v = f.read().strip()
+            if v.isdigit():
+                return v
+        except OSError:
+            continue
+    return ""
 
-THEMES = ("auto", "best", "longest", "power", "trim", "weak", "records")
+
+def _resolve_base() -> str:
+    env = os.environ.get("PIPO_BASE_URL")
+    if env:
+        return env.rstrip("/")
+    port = _local_port()
+    if port:
+        return "http://127.0.0.1:%s" % port
+    return "http://127.0.0.1:8020"
+
+
+BASE = _resolve_base()
+TOKEN = os.environ.get("PIPO_TOKEN", "")
+LOCAL = BASE.startswith("http://127.0.0.1") and not os.environ.get("PIPO_BASE_URL")
+
+THEMES = ("auto", "best", "longest", "power", "trim")
 
 
 def die(msg: str) -> None:
@@ -42,7 +75,9 @@ def call(method: str, path: str, body=None):
     req = urllib.request.Request(
         BASE + path, data=data, method=method,
         headers={"Content-Type": "application/json",
-                 "Authorization": "Bearer %s" % TOKEN})
+                 # 本机桌面版没有鉴权；带一个空 Bearer 反而会让远端服务
+                 # 报 401 而不是「没给令牌」，所以没有令牌时干脆不发这个头
+                 **({"Authorization": "Bearer %s" % TOKEN} if TOKEN else {})})
     try:
         with urllib.request.urlopen(req, timeout=300) as r:
             return json.loads(r.read() or b"null")
@@ -56,6 +91,9 @@ def call(method: str, path: str, body=None):
             die("令牌无效或已过期，检查 PIPO_TOKEN")
         die("%s %s: %s" % (e.code, e.reason, detail))
     except urllib.error.URLError as e:
+        if LOCAL:
+            die("连不上本机的 Pipo（%s）。先打开 Pipo 桌面版再试 —— "
+                "它启动后会把端口写到 ~/Library/Application Support/Pipo/port。" % BASE)
         die("连不上 %s（%s）—— 服务没起来，或 PIPO_BASE_URL 不对" % (BASE, e.reason))
 
 
@@ -145,9 +183,11 @@ def main() -> None:
     ct.add_argument("--top", type=int, default=10)
     a = ap.parse_args()
 
-    if not TOKEN:
-        die("没有设置 PIPO_TOKEN。在 Pipo 网页版个人设置里取令牌，"
-            "然后 export PIPO_TOKEN=...")
+    # 只有连远端服务才需要令牌。本机桌面版是单用户、只监听 127.0.0.1，
+    # 没有鉴权 —— 在这里硬性要求令牌会把「完全离线」这条路堵死。
+    if not TOKEN and not LOCAL:
+        die("连的是远端服务但没有设置 PIPO_TOKEN。"
+            "要用本机桌面版的话，打开 Pipo 并去掉 PIPO_BASE_URL 即可。")
 
     if a.cmd == "list":
         out = call("GET", "/api/videos")

@@ -113,8 +113,7 @@ TOOLS = [
             "为一段录像生成集锦并返回下载链接。整个过程通常十几秒到一分钟。\n"
             "theme 可选：auto（默认，等于完整版：去掉捡球和等待、一个球都不漏，"
             "约压到六成）、best 训练集锦、longest 最长相持、"
-            "power 扣杀瞬间（单次声音峰值，最可靠）、weak 失误合集、"
-            "records 精彩瞬间。"),
+            "power 扣杀瞬间（单次声音峰值，最可靠）。"),
         "inputSchema": {
             "type": "object",
             "properties": {

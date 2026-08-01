@@ -32,19 +32,32 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from ppai import (audio, config, highlight, labels as L, motion, render, rerank,
-                  stats, store)
-from ppai.cli import probe
+from ppai import (assets, audio, config, highlight, labels as L, motion, render,
+                  rerank, stats, store)
+from ppai.media import probe
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(ROOT, "out")
-UPLOADS = os.path.join(ROOT, "uploads")
-LABELS = os.path.join(ROOT, "labels")
+# 代码目录和数据目录必须分开：打包成 .app 之后 ROOT 在应用包里，是**只读**的，
+# 往那儿写 out/ 和 pipo.db 会直接失败。开发时 PIPO_DATA_DIR 不设，
+# DATA 就还是 ROOT，一切和以前一样。
+DATA = os.path.abspath(os.environ.get("PIPO_DATA_DIR", ROOT))
+OUT = os.path.join(DATA, "out")
+UPLOADS = os.path.join(DATA, "uploads")
+LABELS = os.path.join(DATA, "labels")
+CACHE = os.path.join(DATA, "cache")
 ALLOWED_EXT = (".mp4", ".mov", ".m4v")
 
 # 两条最小防护：没有它们，一次手滑（传 10GB）或者用久了
 # （out/ 只增不减，实测一个 12 分钟视频产出 115MB）就能把服务弄挂。
 MAX_UPLOAD_MB = int(os.environ.get("PIPO_MAX_UPLOAD_MB", "1024"))
+# 时长上限。体积限制拦不住这个 —— 低码率的一小时录像可能才 300MB，
+# 而处理成本是按时长走的（实测 13 分钟要 108 vCPU 秒，一小时约 8 分钟 CPU）。
+# 本地模式下这条会被放开：它拦的是「传上来要多久、服务器算多久」，本地没这问题。
+MAX_DURATION_MIN = float(os.environ.get("PIPO_MAX_DURATION_MIN", "60"))
+APP_VERSION = os.environ.get("PIPO_VERSION", "0.1.0")
+# 反馈回流的收集端。**没配就是关的** —— 不给一个默认地址，
+# 免得哪天误开了就有数据往外走。
+CONTRIB_URL = os.environ.get("PIPO_CONTRIB_URL", "")
 KEEP_DAYS = float(os.environ.get("PIPO_KEEP_DAYS", "7"))
 MAX_OUT_GB = float(os.environ.get("PIPO_MAX_OUT_GB", "10"))
 CLEAN_EVERY_S = 1800
@@ -56,6 +69,21 @@ COOKIE = "pipo_sid"
 
 app = FastAPI(title="Pipo AI")
 
+# ── 本地单机模式 ──────────────────────────────────────────
+# 桌面 app 里置 PIPO_LOCAL=1。它关掉的每一样东西，都是**只因为跑在服务器上
+# 才需要**的东西，不是功能缩水：
+#
+#   鉴权     —— 机器就是你的，没有别人要挡
+#   配额邀请 —— 存在的理由是配给服务器 CPU 和磁盘，本地没有要配给的东西
+#   时长上限 —— 一小时的限制来自「上传要传多久、服务器要算多久」
+#   拷贝入库 —— 服务器必须把文件收进自己的目录；本地拷一份是纯浪费，
+#               用户素材动辄几十 GB
+#
+# 反过来，**乒乓球判定保留**：它在本地不再是「拒收」，而是提前告诉用户
+# 这段素材剪不出东西，省得等完一轮才发现。
+LOCAL = os.environ.get("PIPO_LOCAL") == "1"
+LOCAL_UID = "local"
+
 
 # ── 鉴权 ──────────────────────────────────────────────────
 def current_user(request: Request) -> Dict:
@@ -63,7 +91,11 @@ def current_user(request: Request) -> Dict:
 
     GPT Actions 和远程 MCP 连接器都发不了 cookie（不是浏览器），
     只支持 Authorization 头。不加这条，助手那边根本连不上。
+
+    本地模式直接返回那个唯一的本地用户 —— 不存在「别人」。
     """
+    if LOCAL:
+        return store.local_user(LOCAL_UID)
     tok = request.cookies.get(COOKIE, "")
     if not tok:
         auth = request.headers.get("authorization", "")
@@ -106,7 +138,10 @@ def logout():
 
 @app.get("/api/me")
 def me(u: Dict = Depends(current_user)):
-    return {"id": u["id"], "name": u["name"], "is_admin": bool(u["is_admin"])}
+    used = store.used_quota(u["id"])
+    return {"id": u["id"], "name": u["name"], "is_admin": bool(u["is_admin"]),
+            "quota": u["quota"], "used": used,
+            "left": None if u["quota"] is None else max(0, u["quota"] - used)}
 
 
 # ── 数据模型 ──────────────────────────────────────────────
@@ -130,6 +165,15 @@ class Recut(BaseModel):
 class Ingest(BaseModel):
     url: str
     name: str = ""
+
+
+class Signup(BaseModel):
+    code: str
+    name: str = ""
+
+
+class Claim(BaseModel):
+    email: str
 
 
 class Feedback(BaseModel):
@@ -182,6 +226,76 @@ def shot_time(path: str) -> float:
         return 0.0
 
 
+# ── 注册 ──────────────────────────────────────────────────
+# 邀请码不公开列出，改成「点一下发一个」并按 IP 限频。
+# 列在页面上等于谁都能批量抓走：一个人拿 10 个码就是 10 倍配额，
+# 爬虫能把整批扫空 —— 那样配额就完全没意义了。
+_CLAIM_LOG: Dict[str, List[float]] = {}
+_CLAIM_LOCK = threading.Lock()
+CLAIM_PER_DAY = 2
+
+
+def _client_ip(request: Request) -> str:
+    # Caddy 会带 X-Forwarded-For；取最左一跳（最接近真实客户端的那个）
+    xff = request.headers.get("x-forwarded-for", "")
+    return (xff.split(",")[0].strip() if xff
+            else (request.client.host if request.client else "?"))
+
+
+@app.post("/api/invite/claim")
+def claim_invite(req: Claim, request: Request):
+    """发一个未认领的邀请码，记下邮箱。
+
+    **邮箱没有验证** —— 没接邮件服务，所以它只是个联系方式记录，
+    不能当身份用（谁都能填别人的邮箱）。真正的约束是「一码一人」+ 配额。
+    记它是为了内测时能找到人、能看出同一个人反复领码。
+    """
+    email = (req.email or "").strip().lower()
+    if "@" not in email or "." not in email.split("@")[-1] or len(email) > 120:
+        raise HTTPException(400, "邮箱格式不对")
+    ip = _client_ip(request)
+    now = time.time()
+    with _CLAIM_LOCK:
+        hits = [t for t in _CLAIM_LOG.get(ip, []) if now - t < 86400]
+        if len(hits) >= CLAIM_PER_DAY:
+            raise HTTPException(429, "今天领得有点多了，明天再来")
+        # 同一个邮箱只发一次 —— 换 IP 能绕过限频，但换不掉自己填的邮箱
+        got = store.invite_by_email(email)
+        if got:
+            return {"code": got["code"], "quota": got["quota"], "again": True}
+        inv = store.free_invite()
+        if not inv:
+            raise HTTPException(503, "邀请码发完了，过阵子再来")
+        store.set_invite_email(inv["code"], email)
+        hits.append(now)
+        _CLAIM_LOG[ip] = hits
+        # 只在这里清理，避免每次请求都全表扫
+        if len(_CLAIM_LOG) > 5000:
+            for k in [k for k, v in _CLAIM_LOG.items() if not v or now - max(v) > 86400]:
+                _CLAIM_LOG.pop(k, None)
+    return {"code": inv["code"], "quota": inv["quota"]}
+
+
+@app.post("/api/signup")
+def signup(req: Signup):
+    """用邀请码开户。**先建用户再认领** —— 认领是原子的 UPDATE，
+    两个人同时提交同一个码时只有一个能成功，另一个的用户记录再删掉。"""
+    code = (req.code or "").strip().upper()
+    name = (req.name or "").strip()[:24] or "球友"
+    if not code:
+        raise HTTPException(400, "请填邀请码")
+    u = store.create_user(name)
+    inv = store.take_invite(code, u["id"])
+    if not inv:
+        store.delete_user(u["id"])
+        raise HTTPException(400, "邀请码无效、已被使用或已过期")
+    store.set_user_quota(u["id"], code, inv["quota"])
+    r = JSONResponse({"ok": True, "name": name, "quota": inv["quota"]})
+    r.set_cookie(COOKIE, u["token"], httponly=True, samesite="lax",
+                 max_age=90 * 86400, path="/")
+    return r
+
+
 def _fingerprint(path: str) -> str:
     """文件指纹：大小 + 首尾各 1MB 的哈希。整文件哈希对几十上百 MB 的视频太慢，
     而同一个视频的首尾字节几乎不可能碰撞。"""
@@ -193,6 +307,23 @@ def _fingerprint(path: str) -> str:
             f.seek(-(1 << 20), os.SEEK_END)
             h.update(f.read(1 << 20))
     return h.hexdigest()
+
+
+def _require_pingpong(path: str) -> None:
+    """不是乒乓球录像就删文件并报错 —— 收了也剪不出东西，白占配额和磁盘。
+
+    判据是重排器在抽样片段上的平均概率（实测阴性 0.009-0.010、真实
+    0.379-0.672，差 40 倍），**不是场景检测** —— 那条在阴性对照上直接失效，
+    说话视频的 edge 比所有真实素材都高，细节见 rerank.looks_like_pingpong。
+
+    调用前先按指纹查重：重复上传的文件之前已经判过，不用再花这 3.5 秒。
+    """
+    if rerank.looks_like_pingpong(path, config.load())["ok"]:
+        return
+    os.unlink(path)
+    raise HTTPException(
+        400, "这段视频里没检测到乒乓球击球声，剪不出东西。"
+             "需要的是固定机位、能听见击球声的训练或比赛录像。")
 
 
 # ── 任务 ──────────────────────────────────────────────────
@@ -512,6 +643,63 @@ def themes():
     return [t for t in highlight.THEMES if t["id"] not in ("trim", "spot")]
 
 
+class AddLocal(BaseModel):
+    paths: List[str] = []
+
+
+@app.post("/api/local/add")
+def local_add(req: AddLocal, u: Dict = Depends(current_user)):
+    """本地模式导入素材：**按原路径登记，一个字节都不拷贝。**
+
+    这是本地 app 相对服务器最大的一处不同。服务器必须把文件收进自己的目录
+    （客户端的磁盘它够不着），而本地拷一份纯属浪费 —— 用户一堂课的录像动辄
+    几个 GB，一个赛季几十 GB，拷贝既慢又把磁盘占双份。
+
+    代价是**素材会失联**：用户把原文件挪走或删掉，这条记录就指向空。
+    /api/videos 已经会跳过 path 不存在的记录，所以表现是「从列表里消失」，
+    不是报错崩掉。这个取舍在本地是对的：源文件是用户自己的，
+    他移动它就是想移动它，我们不该偷偷留副本。
+
+    逐个报错而不是整批失败：选了 8 个文件其中 1 个坏掉，
+    不该让另外 7 个也白选。
+    """
+    if not LOCAL:
+        raise HTTPException(400, "该接口只在本地模式可用")
+    out, bad = [], []
+    for p in req.paths:
+        p = os.path.abspath(os.path.expanduser(p))
+        name = os.path.basename(p)
+        if not os.path.isfile(p):
+            bad.append({"name": name, "why": "文件不在了"})
+            continue
+        if os.path.splitext(p)[1].lower() not in ALLOWED_EXT:
+            bad.append({"name": name, "why": "只支持 %s" % "/".join(ALLOWED_EXT)})
+            continue
+        try:
+            m = probe(p)
+        except Exception:
+            bad.append({"name": name, "why": "无法解析这个视频"})
+            continue
+        _require_assets()
+        fp = _fingerprint(p)
+        if store.video_by_fp(u["id"], fp) is None:
+            # 本地不拒收，只提示 —— 用户的机器上他想剪什么是他的事，
+            # 我们只负责在他等一轮之后才发现剪不出东西之前先说一声。
+            pp = rerank.looks_like_pingpong(p, config.load())
+            if not pp["ok"]:
+                bad.append({"name": name,
+                            "why": "没检测到乒乓球击球声，多半剪不出东西"})
+                continue
+        rec = store.add_video(u["id"], {
+            "path": p, "name": name, "fp": fp,
+            "duration": m["duration"], "width": m["width"], "height": m["height"],
+            "quality": m["quality_score"], "note": m["recommendation"],
+            "note_en": m.get("recommendation_en", ""),
+            "shot_at": shot_time(p)})
+        out.append(_video_out(rec, reused=rec["path"] != p))
+    return {"added": out, "failed": bad}
+
+
 @app.post("/api/upload")
 async def upload(request: Request, file: UploadFile = File(...),
                  u: Dict = Depends(current_user)):
@@ -548,9 +736,19 @@ async def upload(request: Request, file: UploadFile = File(...),
     except Exception:
         os.unlink(dst)
         raise HTTPException(400, "无法解析这个视频")
+    if m["duration"] > MAX_DURATION_MIN * 60:
+        os.unlink(dst)
+        raise HTTPException(
+            400, "视频太长（%.0f 分钟）。单个最长 %.0f 分钟 —— "
+                 "太长的录像处理很久，建议分段上传后用「多选素材」合起来剪。"
+                 % (m["duration"] / 60, MAX_DURATION_MIN))
+    fp = _fingerprint(dst)
+    if store.video_by_fp(u["id"], fp) is None:
+        _require_assets()
+        _require_pingpong(dst)
 
     rec = store.add_video(u["id"], {
-        "path": dst, "name": os.path.basename(dst), "fp": _fingerprint(dst),
+        "path": dst, "name": os.path.basename(dst), "fp": fp,
         "duration": m["duration"], "width": m["width"], "height": m["height"],
         "quality": m["quality_score"], "note": m["recommendation"],
         "note_en": m.get("recommendation_en", ""),
@@ -626,8 +824,17 @@ def ingest(req: Ingest, u: Dict = Depends(current_user)):
     except Exception:
         os.unlink(dst)
         raise HTTPException(400, "无法解析这个视频")
+    if m["duration"] > MAX_DURATION_MIN * 60:
+        os.unlink(dst)
+        raise HTTPException(
+            400, "视频太长（%.0f 分钟）。单个最长 %.0f 分钟 —— "
+                 "太长的录像处理很久，建议分段上传后用「多选素材」合起来剪。"
+                 % (m["duration"] / 60, MAX_DURATION_MIN))
+    fp = _fingerprint(dst)
+    if store.video_by_fp(u["id"], fp) is None:
+        _require_pingpong(dst)
     rec = store.add_video(u["id"], {
-        "path": dst, "name": os.path.basename(dst), "fp": _fingerprint(dst),
+        "path": dst, "name": os.path.basename(dst), "fp": fp,
         "duration": m["duration"], "width": m["width"], "height": m["height"],
         "quality": m["quality_score"], "note": m["recommendation"],
         "note_en": m.get("recommendation_en", ""),
@@ -640,12 +847,22 @@ def ingest(req: Ingest, u: Dict = Depends(current_user)):
 
 @app.post("/api/jobs")
 def create(req: Job, u: Dict = Depends(current_user)):
+    _require_assets()
     ids = req.ids()
     if not ids:
         raise HTTPException(400, "没有选择视频")
     vs = [store.get_video(u["id"], i) for i in ids]
     if any(v is None for v in vs):
         raise HTTPException(404, "视频不存在")     # 含别人的视频时也走这里
+    # 配额按「出过片的不同视频数」算。已经剪过的视频换主题重剪不占额度 ——
+    # 否则用户不敢试主题，而试主题正是这产品的核心动作。
+    if u["quota"] is not None:
+        done = store.done_video_ids(u["id"])
+        fresh = [i for i in ids if i not in done]
+        if fresh and len(done) + len(fresh) > u["quota"]:
+            raise HTTPException(
+                402, "邀请码的额度用完了（可剪 %d 个视频，已用 %d）。"
+                     "已经剪过的视频换主题重剪不占额度。" % (u["quota"], len(done)))
     jid = store.create_job(u["id"], vs[0]["id"])
     threading.Thread(target=_run, args=(jid, u["id"], [v["path"] for v in vs], req),
                      daemon=True).start()
@@ -750,6 +967,153 @@ def feedback_summary(u: Dict = Depends(current_user)):
         out.append({"video": os.path.basename(lab["video"]),
                     "ranges": len(r), "seconds": round(t, 1)})
     return {"videos": out, "total_ranges": n, "total_seconds": round(sec, 1)}
+
+
+class OptIn(BaseModel):
+    on: bool
+
+
+# ── 按需下载的模型 ────────────────────────────────────────
+# 323MB 的声学模型不打进安装包（占七成体积），第一次要用时才下。
+# **缺了就挡住，不降级** —— 没有它 rerank 原样返回候选（准确率 0.68→0.38）、
+# 乒乓球门禁静默放行一切，两者都不报错，只让成片悄悄变差。
+_DL: Dict[str, Dict] = {}
+_DL_LOCK = threading.Lock()
+
+
+def _require_assets() -> None:
+    miss = assets.missing()
+    if miss:
+        raise HTTPException(
+            424, "还缺少%s（%d MB）。它决定能不能分辨真正的击球声，"
+                 "没有它剪出来的结果会明显变差，所以先下载再开始。"
+                 % ("、".join(a.note for a in miss),
+                    sum(a.size for a in miss) // 1000000))
+
+
+@app.get("/api/assets")
+def assets_status():
+    st = assets.status()
+    with _DL_LOCK:
+        st["downloading"] = {k: dict(v) for k, v in _DL.items()}
+    return st
+
+
+@app.post("/api/assets/fetch")
+def assets_fetch():
+    miss = assets.missing()
+    if not miss:
+        return {"ok": True, "already": True}
+    a = miss[0]
+    if not a.url:
+        raise HTTPException(503, "没有配置下载地址（PIPO_ASSET_BASE）")
+    with _DL_LOCK:
+        cur = _DL.get(a.filename)
+        if cur and cur.get("state") == "running":
+            return {"ok": True, "already_running": True}
+        _DL[a.filename] = {"state": "running", "done": 0, "total": a.size, "percent": 0}
+
+    def run():
+        def prog(done, total):
+            with _DL_LOCK:
+                _DL[a.filename].update(
+                    done=done, total=total,
+                    percent=round(100.0 * done / max(total, 1), 1))
+        try:
+            assets.download(a, on_progress=prog)
+            with _DL_LOCK:
+                _DL[a.filename].update(state="done", percent=100.0)
+        except Exception as e:
+            traceback.print_exc()
+            with _DL_LOCK:
+                _DL[a.filename].update(state="error", error=str(e))
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "started": a.filename, "mb": a.size // 1000000}
+
+
+def _fp_of(path: str) -> str:
+    """给 contrib 算条目 id 用的指纹。查库而不是重算 —— 文件可能很大。
+
+    用已有的 video_by_path(user_id, path)。我曾经在 store 里另加了一个同名的
+    单参版本，Python 取后定义的那个，于是所有调用都 TypeError ——
+    加函数前先查重名。
+    """
+    r = store.video_by_path(LOCAL_UID, path)
+    return r["fp"] if r else path
+
+
+@app.get("/api/contrib")
+def contrib_status(u: Dict = Depends(current_user)):
+    """回流状态。**同时是「让用户看清楚要发什么」的接口** ——
+    在他点同意之前就能看到条数、体积，以及哪些东西不会被发送。
+    """
+    from ppai import contrib
+
+    s = contrib.settings(DATA)
+    b = contrib.collect(LABELS, config.load(), DATA, fp_of=_fp_of)
+    return {
+        "on": bool(s.get("contribute")),
+        "pending": len(b["items"]),
+        "ranges": b["n_ranges"],
+        "candidates": b["n_cand"],
+        "kb": round(b["bytes"] / 1024, 1),
+        "sent": len(s.get("sent") or []),
+        "endpoint": CONTRIB_URL or "",
+    }
+
+
+@app.post("/api/contrib/optin")
+def contrib_optin(req: OptIn, u: Dict = Depends(current_user)):
+    from ppai import contrib
+
+    s = contrib.settings(DATA)
+    s["contribute"] = bool(req.on)
+    contrib.save_settings(DATA, s)
+    return {"on": s["contribute"]}
+
+
+@app.post("/api/contrib/send")
+def contrib_send(u: Dict = Depends(current_user)):
+    """打包并上传。没开启就什么也不做 —— 这个接口不能成为绕过同意的后门。"""
+    from ppai import contrib
+
+    s = contrib.settings(DATA)
+    if not s.get("contribute"):
+        raise HTTPException(400, "还没有开启「帮助改进检测」")
+    if not CONTRIB_URL:
+        raise HTTPException(503, "收集端还没配置（PIPO_CONTRIB_URL）")
+    b = contrib.collect(LABELS, config.load(), DATA, fp_of=_fp_of)
+    if not b["items"]:
+        return {"ok": True, "sent": 0}
+    blob = contrib.pack(b, s["install_id"], APP_VERSION)
+    r = contrib.upload(blob, CONTRIB_URL, s["install_id"])
+    if not r["ok"]:
+        raise HTTPException(502, "发送失败：%s" % r.get("error", r.get("status")))
+    contrib.mark_sent(DATA, [x["id"] for x in b["items"]])
+    return {"ok": True, "sent": len(b["items"]), "kb": round(len(blob) / 1024, 1)}
+
+
+@app.get("/api/local/path")
+def local_path(url: str, u: Dict = Depends(current_user)):
+    """把 /media/xxx 换算成磁盘路径，给「在访达中显示」用。
+
+    前端不该知道 out/ 在哪 —— 那是后端的事，而且打包后它在
+    ~/Library/Application Support 下，跟仓库目录完全没关系。
+
+    **越界检查和 /media 用同一套**（realpath 后必须仍在用户目录下）：
+    这个接口同样能读出路径，少一道检查就是多一个能探测本机文件的洞。
+    """
+    if not LOCAL:
+        raise HTTPException(400, "该接口只在本地模式可用")
+    rest = url.split("?", 1)[0]
+    if not rest.startswith("/media/"):
+        raise HTTPException(400, "不是成片地址")
+    base = os.path.realpath(user_dir(OUT, u["id"]))
+    p = os.path.realpath(os.path.join(base, urllib.parse.unquote(rest[len("/media/"):])))
+    if not p.startswith(base + os.sep) or not os.path.isfile(p):
+        raise HTTPException(404)
+    return {"path": p}
 
 
 @app.get("/media/{rest:path}")
@@ -941,8 +1305,7 @@ MCP_TOOLS = [
      "description": ("生成集锦并返回下载链接，通常十几秒到一分钟。theme 可选："
                      "auto（默认，等于完整版：去掉捡球和等待、一个球都不漏）、"
                      "best 训练集锦、longest 最长相持、"
-                     "power 扣杀瞬间（单次声音峰值，最可靠）、"
-                     "weak 失误合集、records 精彩瞬间。"),
+                     "power 扣杀瞬间（单次声音峰值，最可靠）。"),
      "inputSchema": {"type": "object",
                      "properties": {"video_id": {"type": "string"},
                                     "theme": {"type": "string", "default": "auto"},
@@ -1085,16 +1448,17 @@ def _sweeper():
         time.sleep(CLEAN_EVERY_S)
 
 
-# 未登录访问首页时跳登录页
+# 未登录访问首页时跳登录页。本地模式没有「登录」这回事 ——
+# 不放行的话 app 一打开就是登录页，而那页要求的邀请码在买断制里根本不存在。
 @app.middleware("http")
 async def gate(request: Request, call_next):
-    if request.url.path in ("/", "/index.html") and not store.user_by_token(
-            request.cookies.get(COOKIE, "")):
+    if (not LOCAL and request.url.path in ("/", "/index.html")
+            and not store.user_by_token(request.cookies.get(COOKIE, ""))):
         return RedirectResponse("/login.html", status_code=303)
     return await call_next(request)
 
 
-for _d in (OUT, UPLOADS, LABELS):
+for _d in (OUT, UPLOADS, LABELS, CACHE):
     os.makedirs(_d, exist_ok=True)
 _n = store.orphan_running_jobs()
 if _n:

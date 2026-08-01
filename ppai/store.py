@@ -22,7 +22,7 @@ import threading
 import time
 from typing import Dict, List, Optional
 
-DB_PATH = os.environ.get("PIPO_DB", "pipo.db")
+from .paths import DB as DB_PATH
 _local = threading.local()
 
 SCHEMA = """
@@ -36,6 +36,10 @@ CREATE TABLE IF NOT EXISTS videos(
 CREATE TABLE IF NOT EXISTS jobs(
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL, video_id TEXT,
   state TEXT NOT NULL, stage TEXT, payload TEXT, created REAL NOT NULL, updated REAL);
+CREATE TABLE IF NOT EXISTS invites(
+  code TEXT PRIMARY KEY, quota INTEGER NOT NULL, note TEXT,
+  created REAL NOT NULL, expires REAL,
+  claimed_by TEXT, claimed_at REAL, email TEXT, emailed_at REAL);
 CREATE TABLE IF NOT EXISTS oauth_codes(
   code TEXT PRIMARY KEY, user_id TEXT NOT NULL, client_id TEXT,
   redirect_uri TEXT, challenge TEXT, created REAL NOT NULL);
@@ -56,7 +60,11 @@ def conn() -> sqlite3.Connection:
         c.executescript(SCHEMA)
         # SCHEMA 里是 CREATE TABLE IF NOT EXISTS，加字段不会作用到已有的库，
         # 所以新列要单独 ALTER。重复执行会报 duplicate column，忽略即可。
-        for tbl, col, decl in (("videos", "shot_at", "REAL"),):
+        for tbl, col, decl in (("videos", "shot_at", "REAL"),
+                               ("users", "invite", "TEXT"),
+                               ("users", "quota", "INTEGER"),
+                               ("invites", "email", "TEXT"),
+                               ("invites", "emailed_at", "REAL")):
             try:
                 c.execute("ALTER TABLE %s ADD COLUMN %s %s" % (tbl, col, decl))
                 c.commit()
@@ -71,13 +79,131 @@ def _row(r) -> Optional[Dict]:
 
 
 # ── 用户 ──────────────────────────────────────────────────
-def create_user(name: str, is_admin: bool = False) -> Dict:
+def create_user(name: str, is_admin: bool = False,
+                invite: Optional[str] = None,
+                quota: Optional[int] = None) -> Dict:
+    """quota=None 表示不限量（管理员和早期用户）；有值时是「能剪几个视频」。"""
     uid, tok = secrets.token_hex(8), secrets.token_urlsafe(24)
     c = conn()
-    c.execute("INSERT INTO users(id,name,token,is_admin,created) VALUES(?,?,?,?,?)",
-              (uid, name, tok, int(is_admin), time.time()))
+    c.execute("""INSERT INTO users(id,name,token,is_admin,created,invite,quota)
+                 VALUES(?,?,?,?,?,?,?)""",
+              (uid, name, tok, int(is_admin), time.time(), invite, quota))
     c.commit()
-    return {"id": uid, "name": name, "token": tok, "is_admin": is_admin}
+    return {"id": uid, "name": name, "token": tok, "is_admin": is_admin,
+            "invite": invite, "quota": quota}
+
+
+def local_user(uid: str = "local") -> Dict:
+    """桌面 app 的唯一用户，不存在就建。
+
+    仍然走 users 表而不是绕过它：视频归属、任务、反馈全部外键到 user_id，
+    为了单机模式给它们各开一条无主分支，只会让两种模式慢慢跑偏。
+    一行记录换来所有下游代码不用改。
+
+    quota 恒为 None（不限量）—— 配额是配给服务器资源的，本地没有。
+    """
+    c = conn()
+    r = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    if r:
+        return dict(r)
+    c.execute("""INSERT INTO users(id,name,token,is_admin,created,invite,quota)
+                 VALUES(?,?,?,?,?,?,?)""",
+              (uid, "本机", secrets.token_urlsafe(24), 1, time.time(), None, None))
+    c.commit()
+    return dict(c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone())
+
+
+# ── 邀请码 ────────────────────────────────────────────────
+def make_invites(n: int, quota: int = 3, days: Optional[float] = None,
+                 note: str = "") -> List[str]:
+    """生成一批邀请码。quota 是「这个码开出来的账号能剪几个视频」。
+
+    码用 12 个 base32 字符（去掉易混的 0/1/O/I），大约 60 bit ——
+    公开发放时不能用短码，否则能被枚举。
+    """
+    ab = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    out, c = [], conn()
+    exp = time.time() + days * 86400 if days else None
+    for _ in range(n):
+        code = "".join(secrets.choice(ab) for _ in range(12))
+        c.execute("""INSERT INTO invites(code,quota,note,created,expires)
+                     VALUES(?,?,?,?,?)""", (code, quota, note, time.time(), exp))
+        out.append(code)
+    c.commit()
+    return out
+
+
+def set_invite_email(code: str, email: str) -> None:
+    c = conn()
+    c.execute("UPDATE invites SET email=?, emailed_at=? WHERE code=?",
+              (email, time.time(), code))
+    c.commit()
+
+
+def invite_by_email(email: str) -> Optional[Dict]:
+    """同一个邮箱已经领过就把原来那个还给他，而不是再发一个新的。"""
+    return _row(conn().execute(
+        "SELECT * FROM invites WHERE email=? ORDER BY emailed_at DESC LIMIT 1",
+        (email,)).fetchone())
+
+
+def take_invite(code: str, user_id: str) -> Optional[Dict]:
+    """认领一个邀请码。**一码一人** —— 认领后就绑死，别人再输同一个码无效。
+
+    用 UPDATE ... WHERE claimed_by IS NULL 而不是「先查再写」：
+    两个人同时提交同一个码时，先查再写会让两人都通过。
+    """
+    c = conn()
+    now = time.time()
+    n = c.execute("""UPDATE invites SET claimed_by=?, claimed_at=?
+                     WHERE code=? AND claimed_by IS NULL
+                       AND (expires IS NULL OR expires > ?)""",
+                  (user_id, now, code, now)).rowcount
+    c.commit()
+    if not n:
+        return None
+    return _row(c.execute("SELECT * FROM invites WHERE code=?", (code,)).fetchone())
+
+
+def free_invite() -> Optional[Dict]:
+    """取一个还没被认领的码，给「点一下领取」用。"""
+    now = time.time()
+    return _row(conn().execute(
+        """SELECT * FROM invites WHERE claimed_by IS NULL
+           AND (expires IS NULL OR expires > ?) ORDER BY created LIMIT 1""",
+        (now,)).fetchone())
+
+
+def list_invites() -> List[Dict]:
+    return [dict(r) for r in
+            conn().execute("SELECT * FROM invites ORDER BY created DESC").fetchall()]
+
+
+def used_quota(user_id: str) -> int:
+    """已用配额 = **出过片的不同视频数**，不是任务数。
+
+    同一个视频换主题重剪不扣次数 —— 否则用户会不敢试主题，
+    而试主题恰恰是这产品的核心动作。
+    """
+    r = conn().execute(
+        """SELECT COUNT(DISTINCT video_id) n FROM jobs
+           WHERE user_id=? AND state='done' AND video_id IS NOT NULL""",
+        (user_id,)).fetchone()
+    return int(r["n"] or 0)
+
+
+def set_user_quota(uid: str, invite: str, quota: Optional[int]) -> None:
+    c = conn()
+    c.execute("UPDATE users SET invite=?, quota=? WHERE id=?", (invite, quota, uid))
+    c.commit()
+
+
+def done_video_ids(user_id: str) -> set:
+    """已经成功出过片的视频 id。配额按这个算，不按任务数。"""
+    return {r["video_id"] for r in conn().execute(
+        """SELECT DISTINCT video_id FROM jobs
+           WHERE user_id=? AND state='done' AND video_id IS NOT NULL""",
+        (user_id,)).fetchall()}
 
 
 def user_by_token(token: str) -> Optional[Dict]:
@@ -145,6 +271,13 @@ def add_video(user_id: str, meta: Dict) -> Dict:
                meta.get("note_en", ""), time.time(), meta.get("shot_at")))
     c.commit()
     return dict(c.execute("SELECT * FROM videos WHERE id=?", (vid,)).fetchone())
+
+
+def video_by_fp(user_id: str, fp: str) -> Optional[Dict]:
+    """按指纹找已有记录。上传时先查它，命中就不用再跑乒乓球判定（要 3.5 秒）。"""
+    r = conn().execute("SELECT * FROM videos WHERE user_id=? AND fp=?",
+                       (user_id, fp)).fetchone()
+    return dict(r) if r else None
 
 
 def set_shot_at(vid: str, ts: float) -> None:

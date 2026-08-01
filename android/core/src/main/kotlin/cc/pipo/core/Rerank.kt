@@ -1,0 +1,170 @@
+package cc.pipo.core
+
+import ai.onnxruntime.OnnxTensor
+import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OrtSession
+import java.io.Closeable
+import java.io.File
+import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.FloatBuffer
+import kotlin.math.abs
+import kotlin.math.exp
+import kotlin.math.roundToInt
+
+/**
+ * 候选重排 —— ppai/rerank.py 的 Kotlin 版。
+ *
+ * 干的事：谱通量检测器给出的候选里混着一半以上的假货（球台碰撞、脚步、
+ * 说话），用 PANNs CNN14 的嵌入 + 一个逻辑回归把它们排个序，按比例砍掉后半。
+ * 实测把准确率从 0.38-0.49 提到 0.58-0.68。
+ *
+ * 两个必须照搬的约束
+ * ------------------
+ *  * **按比例保留，不能用固定概率阈值。** 概率标定不跨视频：实测 B→A 用
+ *    固定阈值 0.5 时召回只剩 0.170，而按比例保留 50% 时是 0.755。
+ *    排序能力跨视频，绝对概率值不跨。
+ *  * **模型必须是 fp32。** 量化过的版本测过：int8 让前五片段只剩 55% 重合
+ *    而且更慢，fp16 改掉 28% 的选段且优劣未验证。只有 fp32 与 torch 逐行一致。
+ *
+ * 为什么在 core 而不是 cutter
+ * ---------------------------
+ * 它一行 Android API 都不用（只有 ai.onnxruntime 和标准库）。放在纯 JVM 的
+ * core 里，就能用桌面版的 onnxruntime 直接对着 Python 逐点比对，
+ * 不必为了跑一个数值测试去装模拟器、推 323MB 模型、和存储空间搏斗。
+ * Android 侧只剩「原生库能不能在 ARM 上加载」这一件事要验，那是另一回事。
+ *
+ * 内存
+ * ----
+ * 嵌入本身不大（1 秒窗 / 0.5 秒跳，一小时素材约 7200×2048×4 = 59MB），
+ * **真正吃内存的是 PCM**：一小时 32kHz float 就是 460MB。手机上必须分段解码
+ * 处理，见 [MAX_SAFE_SECONDS]。
+ */
+object Rerank {
+
+    private const val PANNS_SR = 32000
+    private const val WIN = 32000        // 1 秒
+    private const val HOP = 16000        // 0.5 秒
+    private const val BATCH = 64
+    private const val DIM = 2048
+
+    /**
+     * 单次整段处理的时长上限。超过这个就必须分段 —— 32kHz 的 float PCM
+     * 是每秒 128KB，20 分钟就 154MB，再加嵌入和解码缓冲，中端机会被系统杀掉。
+     * 这不是保守估计，是 float 数组的算术。
+     */
+    const val MAX_SAFE_SECONDS = 20 * 60
+
+    class Model(
+        internal val env: OrtEnvironment,
+        internal val session: OrtSession,
+        internal val coef: FloatArray,
+        internal val intercept: Float,
+        internal val inputName: String,
+    ) : Closeable {
+        override fun close() { runCatching { session.close() } }
+    }
+
+    /**
+     * 载入模型。[onnxPath] 是 cnn14.onnx（323MB，按需下载到本机），
+     * [weightsPath] 是 rerank.bin（8KB，跟着安装包走）。
+     */
+    fun load(onnxPath: String, weightsPath: String): Model {
+        val env = OrtEnvironment.getEnvironment()
+        val opts = OrtSession.SessionOptions().apply {
+            setIntraOpNumThreads(Runtime.getRuntime().availableProcessors().coerceAtMost(4))
+        }
+        // 传路径而不是字节数组：ORT 会 mmap 权重，避免把 323MB 读进堆里
+        val session = env.createSession(onnxPath, opts)
+        val (coef, b) = readWeights(File(weightsPath))
+        return Model(env, session, coef, b, session.inputNames.iterator().next())
+    }
+
+    /**
+     * 读 rerank.bin：魔数 "PIPO" + 版本(u32) + 维度(i32) + 截距(f32) + 系数(f32×n)。
+     * 自定义格式而不是 .npz —— 那是 zip 套 npy，为 8KB 权重实现两层解析不值得。
+     */
+    internal fun readWeights(f: File): Pair<FloatArray, Float> {
+        RandomAccessFile(f, "r").use { raf ->
+            val head = ByteArray(16)
+            raf.readFully(head)
+            val hb = ByteBuffer.wrap(head).order(ByteOrder.LITTLE_ENDIAN)
+            val magic = ByteArray(4).also { hb.get(it) }
+            require(String(magic) == "PIPO") { "不是 rerank.bin：魔数不对" }
+            val ver = hb.int
+            require(ver == 1) { "rerank.bin 版本 $ver 不认识" }
+            val n = hb.int
+            val b = hb.float
+            require(n == DIM) { "系数维度 $n，期望 $DIM" }
+            val raw = ByteArray(4 * n)
+            raf.readFully(raw)
+            val fb = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
+            return FloatArray(n) { fb.get() } to b
+        }
+    }
+
+    /** 滑窗提嵌入。返回 (窗中心时刻, [N][2048])。 */
+    fun embed(pcm32k: FloatArray, m: Model): Pair<DoubleArray, Array<FloatArray>> {
+        var x = pcm32k
+        if (x.size < WIN) x = x.copyOf(WIN)          // 和 Python 的 np.pad 一致：补零
+        val n = 1 + (x.size - WIN) / HOP
+        val times = DoubleArray(n) { (it.toLong() * HOP + WIN / 2.0) / PANNS_SR }
+        val feats = Array(n) { FloatArray(DIM) }
+
+        var i = 0
+        while (i < n) {
+            val b = minOf(BATCH, n - i)
+            val buf = FloatBuffer.allocate(b * WIN)
+            for (k in 0 until b) buf.put(x, (i + k) * HOP, WIN)
+            buf.rewind()
+            OnnxTensor.createTensor(m.env, buf, longArrayOf(b.toLong(), WIN.toLong())).use { t ->
+                m.session.run(mapOf(m.inputName to t)).use { r ->
+                    @Suppress("UNCHECKED_CAST")
+                    val out = r[0].value as Array<FloatArray>
+                    for (k in 0 until b) System.arraycopy(out[k], 0, feats[i + k], 0, DIM)
+                }
+            }
+            i += b
+        }
+        return times to feats
+    }
+
+    /** sigmoid(x·coef + b)。先裁再取指数，否则大负值那侧会溢出成 NaN。 */
+    fun probability(f: FloatArray, m: Model): Double {
+        var z = m.intercept.toDouble()
+        for (j in 0 until DIM) z += f[j].toDouble() * m.coef[j]
+        return 1.0 / (1.0 + exp(-z.coerceIn(-700.0, 700.0)))
+    }
+
+    /**
+     * 按比例保留候选。返回**按时间升序**的保留结果，和 Python 的 apply 一致。
+     */
+    fun apply(
+        hits: DoubleArray, times: DoubleArray, feats: Array<FloatArray>,
+        m: Model, keepRatio: Double = 0.6,
+    ): DoubleArray {
+        if (hits.isEmpty() || times.isEmpty()) return hits
+        val p = DoubleArray(hits.size) { i ->
+            // 每个候选取时间上最近的那个窗 —— 和 Python 的 argmin|t-c| 相同
+            var best = 0
+            var bd = Double.MAX_VALUE
+            for (j in times.indices) {
+                val d = abs(times[j] - hits[i])
+                if (d < bd) { bd = d; best = j }
+            }
+            probability(feats[best], m)
+        }
+        val k = (hits.size * keepRatio).roundToInt().coerceAtLeast(1)
+        val idx = p.indices.sortedWith(compareByDescending<Int> { p[it] }.thenBy { it }).take(k)
+        return idx.map { hits[it] }.sorted().toDoubleArray()
+    }
+
+    /** 整段素材的平均概率 —— 用来判断「这是不是乒乓球录像」。 */
+    fun meanProbability(feats: Array<FloatArray>, m: Model): Double {
+        if (feats.isEmpty()) return 0.0
+        var s = 0.0
+        for (f in feats) s += probability(f, m)
+        return s / feats.size
+    }
+}

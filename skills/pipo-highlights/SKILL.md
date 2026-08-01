@@ -1,11 +1,10 @@
 ---
 name: pipo-highlights
-description: 把乒乓球训练/比赛录像自动剪成集锦。用户给一段固定机位的长视频（本地文件或已上传的录像），自动找出有效回合、剪掉捡球和等待，按主题输出片段——最长对拉、最帅击球、最重扣杀、训练集锦、失误合集等。也可只剪掉空闲保留全部球。Automatically edit table tennis / ping pong training videos into highlight reels.
+description: 把乒乓球训练/比赛录像自动剪成集锦。用户给一段固定机位的长视频（本地文件或已上传的录像），自动找出有效回合、剪掉捡球和等待，按主题输出片段——最长相持、扣杀瞬间、训练集锦等。也可只剪掉空闲保留全部球。Automatically edit table tennis / ping pong training videos into highlight reels.
 metadata:
   openclaw:
     requires:
       bins: [python3]
-      env: [PIPO_TOKEN]
 ---
 
 # Pipo AI —— 乒乓球集锦自动剪辑
@@ -16,10 +15,16 @@ metadata:
 
 ## 前置条件
 
-- `PIPO_TOKEN` —— 访问令牌，在 Pipo 网页版取
-- `PIPO_BASE_URL` —— 服务地址，不设则默认 `http://127.0.0.1:8020`
+**首选：本机桌面版,完全离线。** 用户装了 Pipo.app 并打开它,脚本会自动找到
+它的端口(app 启动时写在 `~/Library/Application Support/Pipo/port`),
+不需要令牌、不联网、录像不离开本机。连不上时脚本会明确提示「先打开 Pipo」。
 
-令牌缺失时脚本会直接报错并提示怎么拿，不要替用户编一个。
+**备选：远端服务。** 设 `PIPO_BASE_URL` 和 `PIPO_TOKEN`。
+令牌缺失时脚本会报错并提示怎么拿,不要替用户编一个。
+
+第一次剪辑前 app 会提示下载一个约 300MB 的声学模型(只下一次)。
+如果脚本报 424,原样把提示转告用户,让他在 Pipo 窗口里点下载 ——
+**不要建议绕过**,没有那个模型剪出来的结果会明显变差。
 
 ## 怎么用
 
@@ -35,6 +40,11 @@ python3 {baseDir}/scripts/pipo_cli.py upload ~/Desktop/training.mp4
 
 返回里的 `id` 就是后面要用的 `video_id`。支持 mp4 / mov / m4v。
 上传是流式的，几百 MB 的录像也不会占内存。
+
+上传可能被拒，两种情况都**照原样告诉用户，不要换个文件重试**：
+
+* **超过 1 小时** —— 建议分段传，再用「多选素材」合起来剪
+* **没检测到乒乓球击球声** —— 这段不是乒乓球录像，或者录得听不见击球声
 
 用户说的是**已经传过的录像**：
 
@@ -58,8 +68,6 @@ python3 {baseDir}/scripts/pipo_cli.py cut <video_id> --theme power --top 5
 | `longest` | 最长相持 | "最精彩的来回"、"打得最久的那几个球" |
 | `power` | 扣杀瞬间 | "最狠的一板"、"最帅的一球" —— 单次击球声音峰值最高（实测最可靠） |
 | `best` | 训练集锦 | 多球训练素材的通用集锦 |
-| `weak` | 失误合集 | "看看我哪些球没打好" |
-| `records` | 精彩瞬间 | 各单项之最各取一段 |
 
 `auto` 和 `trim` 是同一件事，传哪个都行。
 `--top` 是取前几段，在 `auto` / `trim` 下无效（它们保留所有回合）。

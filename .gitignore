@@ -11,3 +11,29 @@ pipo.db-shm
 pipo.db-wal
 thumbs/
 uploads/
+
+# 第三方二进制不进仓库：149MB，而且 ffmpeg 是 GPLv3 构建 ——
+# 把别人的 GPL 二进制塞进一个 MIT 仓库只会把许可关系搅浑。
+# 打包时用 tools/fetch_ffmpeg.sh 取，或自己放一份到 bin/。
+bin/
+dist/
+build/
+*.spec
+fixtures/
+
+# wrangler 的本地 R2/KV 模拟器 —— 里面是整份模型，308MB
+.wrangler/
+# 下载的第三方权重（EfficientAT 实验用），22MB，按需重下
+resources/*.pt
+# Gradle 缓存和本机 SDK 路径，都带着用户名
+android/.gradle/
+android/*/build/
+android/local.properties
+android/.idea/
+.gradle/
+# 标注备份
+*.json.bak
+# 打包中间产物
+*.egg-info/
+__pycache__/
+.DS_Store

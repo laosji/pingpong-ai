@@ -1,0 +1,14 @@
+name = "pipo-feedback"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+
+# 反馈落在 R2，限频计数落在 KV。两个都要先建好并把 id 填进来：
+#   npx wrangler r2 bucket create pipo-feedback
+#   npx wrangler kv namespace create PIPO_RATE
+[[r2_buckets]]
+binding = "PIPO_FEEDBACK"
+bucket_name = "pipo-feedback"
+
+[[kv_namespaces]]
+binding = "PIPO_RATE"
+id = "在这里填 kv namespace create 返回的 id"

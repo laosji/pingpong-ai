@@ -1,0 +1,55 @@
+/* 登录 / 领码两页共用。抽出来是因为它们必须长得一模一样 ——
+   拆成两页之后，如果卡片宽度、圆角、按钮高度有一点不同，
+   来回跳转时会「跳一下」，看起来像加载失败。 */
+:root{--bg:#f7f7f6;--surface:#fff;--line:#e8e6e3;--line-2:#d6d3cf;
+  --ink:#18181b;--ink-2:#52525b;--ink-3:#8b8782;--accent:#2563eb;--on-accent:#fff;
+  --warn:#b45309;--warn-wash:#fffbeb;--ok:#15803d;--ok-wash:#f0fdf4}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1012;--surface:#17181b;
+  --line:#26282c;--line-2:#34373c;--ink:#f4f4f5;--ink-2:#a1a1aa;--ink-3:#71717a;
+  --accent:#5b8dff;--on-accent:#0b1220;--warn:#f0b429;--warn-wash:#1f1a0e;
+  --ok:#4ade80;--ok-wash:#0e1f14}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);
+  color:var(--ink);font:15px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC",
+  "Segoe UI","Helvetica Neue",sans-serif;-webkit-font-smoothing:antialiased;
+  padding:24px}
+.box{width:min(400px,92vw);background:var(--surface);border:1px solid var(--line);
+  border-radius:14px;padding:32px;
+  box-shadow:0 1px 2px rgba(0,0,0,.04),0 8px 28px rgba(0,0,0,.06)}
+.logo{width:34px;height:34px;border-radius:9px;background:var(--accent);
+  display:grid;place-items:center;color:var(--on-accent);font-size:18px;font-weight:700;
+  margin-bottom:18px}
+/* 品牌标记：一颗球加两道拖影。不用字母 —— 「P」既不说明这是乒乓球，
+   也不说明它在动。两道拖影长短不同、透明度递增，读起来是加速而不是平移；
+   球放在轨迹前端，方向感来自这个位置关系而不是箭头。
+   用 currentColor，深浅色主题和不同背景上都不用另配一份。 */
+.logo svg{width:60%;height:60%;display:block;overflow:visible}
+h1{margin:0 0 6px;font-size:18px;font-weight:640;letter-spacing:-.01em}
+.sub{margin:0 0 24px;font-size:13px;color:var(--ink-3);line-height:1.6}
+label{display:block;font-size:12px;font-weight:600;color:var(--ink-2);
+  margin:0 0 6px}
+.field+.field{margin-top:16px}
+input{width:100%;border:1px solid var(--line-2);background:transparent;color:var(--ink);
+  border-radius:10px;padding:11px 13px;font:inherit;font-size:14px;outline:0;
+  transition:border-color .12s}
+input:focus{border-color:var(--accent)}
+input[aria-invalid="true"]{border-color:var(--warn)}
+/* 错误贴在它所属的字段下面，不再统一堆到卡片顶部 ——
+   顶部那条「请填邮箱」离邮箱框隔了整个表单，读的人不知道在说哪个框。 */
+.msg{font-size:12.5px;line-height:1.5;margin:6px 0 0;color:var(--warn);min-height:0}
+.msg:empty{display:none}
+button{width:100%;margin-top:20px;border:0;border-radius:10px;padding:11px;
+  background:var(--accent);color:var(--on-accent);font:inherit;font-size:14px;
+  font-weight:560;cursor:pointer;transition:filter .12s}
+button:hover{filter:brightness(1.08)}
+button:disabled{opacity:.55;cursor:default;filter:none}
+.alt{margin:22px 0 0;padding-top:18px;border-top:1px solid var(--line);
+  font-size:12.5px;color:var(--ink-3)}
+.alt a{color:var(--accent);text-decoration:none;font-weight:560}
+.alt a:hover{text-decoration:underline}
+.foot{margin:20px 0 0;font-size:12px}
+.foot a{color:var(--ink-3);text-decoration:none}
+.code{font:600 20px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;
+  letter-spacing:.14em;background:var(--ok-wash);color:var(--ok);
+  border-radius:10px;padding:14px;text-align:center;margin-top:16px;
+  user-select:all;word-break:break-all}

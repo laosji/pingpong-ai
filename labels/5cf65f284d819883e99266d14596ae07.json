@@ -1,12 +1,12 @@
 {
   "schema": 1,
-  "video": "/Users/duanchao/Downloads/PP-video/5cf65f284d819883e99266d14596ae07.mp4",
+  "video": "5cf65f284d819883e99266d14596ae07.mp4",
   "duration": 443.07,
   "complete": false,
   "complete_ranges": [
     [
-      60,
-      105
+      60.0,
+      105.0
     ]
   ],
   "playing": [

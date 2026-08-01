@@ -6,6 +6,7 @@ services:
       # 上传上限。改这里的同时**必须**改 Caddyfile 里的 max_size ——
       # 两处不一致时，小的那个先拒绝，用户会看到反向代理的错误页而不是我们的提示。
       PIPO_MAX_UPLOAD_MB: "1024"
+      PIPO_MAX_DURATION_MIN: "60"   # 一小时录像约需 8 分钟 CPU，再长体验就崩了
       PIPO_KEEP_DAYS: "2"          # 成片保留天数。原片同样按这个清
       PIPO_MAX_OUT_GB: "20"
       PIPO_BASE_URL: "https://${PIPO_DOMAIN:-localhost}"

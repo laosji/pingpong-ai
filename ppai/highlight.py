@@ -359,35 +359,39 @@ THEMES = [
     {"id": "power",   "name": "扣杀瞬间", "desc": "单次击球声音峰值最高的回合",
      "name_en": "Smash Moment", "desc_en": "The rally with the loudest single contact",
      "applicable": ["dense"]},
-    # 命名是产品决定。技术上它只能说明「这一板收尾比该回合平均软」，
-    # 推不出是失误还是轻挡得分 —— 所以 desc 保持如实描述，不跟着名字一起夸大。
-    {"id": "weak",    "name": "失误合集",
-     "desc": "收尾力量明显低于回合平均的球（注：与已废弃的「最帅击球」用同一个指标，"
-             "实测只有 48% 取到真挥拍，排序可信度低）",
-     "name_en": "Misses", "desc_en": "Rallies ending well below their own average power",
-     "applicable": []},
-    # 和「训练集锦」的区别要写清楚，否则两个名字听起来都像「最好的部分」，
-    # 用户不知道该选哪个：精彩瞬间是三项纪录各一段（很短），训练集锦是综合排名（较长）
+    # 「失误合集」已下线，见本文件末尾的 _REMOVED 说明。
     {"id": "trim",    "name": "完整版",
      "name_en": "Full Cut",
      "desc": "只剪掉等待和捡球，一个球都不漏（约压到三分之一）",
      "desc_en": "Removes only waiting and ball-fetching; keeps every rally (~1/3 the length)",
      "applicable": ["sparse"]},
-    {"id": "records", "name": "精彩瞬间",
-     "name_en": "Top Moments",
-     "desc": "全场三项纪录各一段：最长相持、最强击球、最帅收尾（通常 10-30 秒）",
-     "desc_en": "Three records, one clip each: longest rally, hardest hit, best finish (10-30s)",
-     "applicable": []},
 ]
+
+# 下线的主题。留在这里是为了别再被「补回来」——
+# 每一条都是测过之后才拿掉的，不是忘了做。
+_REMOVED = {
+    "kill": "「最帅击球」。用 tail_power/power，实测只有 48% 取到真挥拍，"
+            "回合结尾多是台面弹跳而不是那记制胜球。",
+    "weak": "「失误合集」。和 kill 是同一根轴的两端，同一个 tail_power 指标，"
+            "同样的 48% 命中率 —— kill 因此下线了，weak 没有理由留着。"
+            "更根本的一条：音频区分不了「失误」和「得分」，球下网、出界、"
+            "对方没接到，结局都是球落地弹跳，声学上完全一样。"
+            "所以这个类别即使指标修好了也只能叫「回合速终」，不能叫失误。",
+    "error": "规则版失误检测。判据要求连续 4 次间隔递减，检测器准确率 0.381 撑不住，"
+             "收紧时 0 检出，放宽到能出结果时检出的那 1 个是假的。",
+    "records": "「精彩瞬间」。原本是三项纪录各一段，第三项「最帅收尾」和 kill/weak "
+               "同一个 tail_power 指标，一起下线了。剩下两项恰好就是「扣杀瞬间」和"
+               "「最长相持」各自的第一名 —— 8 个视频逐个验证，**完全重合，"
+               "零独立内容**。它唯一还剩的差别是更短（2 段 vs 10 段），"
+               "而「我要短一点」是时长选项，不该占一个主题位。"
+}
 
 RANKERS = {
     "best":    "综合评分（相持长度 + 力量 + 频率 + 运动）",
     "longest": "最长相持 —— 按瞬态数排序",
-    "weak":    "失误合集 —— 收尾力量/整体力量 最低",
     "power":   "扣杀瞬间 —— 按回合内单次声音峰值排序（实测排序相关 0.89，最可靠）",
     "trim":    "完整版 —— 只剪掉等待，押召回不押准确",
     "spot":    "精华 —— 综合评分最高的若干回合，凑满目标时长",
-    "records": "精彩瞬间 —— 全场三项纪录各一段",
 }
 
 
@@ -405,7 +409,14 @@ def rank(rs: List[Dict], kind: str, cfg: Dict) -> List[Dict]:
     它大概率是失误，但也可能是一记好球直接得分。不要当成失误识别。
     """
     if kind == "longest":
-        return sorted(rs, key=lambda r: (-r["hits"], -(r["end"] - r["start"])))
+        # 时长下限。原来只按瞬态数排，短回合照样能进前十 —— 实测多球训练
+        # 素材 06a6c98c 的前十是 2.1-3.5 秒，把「最长相持」这个名字贴在
+        # 2 秒的球上是名不副实。加了下限后它只剩 3 段，那是实话：
+        # 多球训练里教练连续喂球，本来就没有相持。
+        # 另外 6 个对打素材受影响很小（前十里只有 0-2 段被砍）。
+        lo = float(cfg.get("longest_min_s", 3.0))
+        cand = [r for r in rs if r["end"] - r["start"] >= lo]
+        return sorted(cand, key=lambda r: (-r["hits"], -(r["end"] - r["start"])))
     # 「失误球 = 只有一次击球、随后没有回击」—— 这个规则本身是对的，
     # 真值里 39 个回合有 5 个是单拍（13%），确实是真实存在的类别。
     # 但检测器实现不了：实测检出 15 个单拍回合只有 2 个是真的（准确率 0.13），
@@ -413,26 +424,9 @@ def rank(rs: List[Dict], kind: str, cfg: Dict) -> List[Dict]:
     # 误报候选凭空造出假单拍，真单拍旁边混进误报又变成多拍。
     # 根因和落地弹跳判据一样：准确率 0.6 的候选流里，「孤立事件」对噪声最敏感。
     # 要做这个类别，得先把击球准确率提到 0.9 以上。
-    if kind == "records":
-        # 每项纪录各取一段。可能撞车（同一回合既最长又最强），去重后按时间排
-        if not rs:
-            return []
-        peak = [r.get("peak_power", 0.0) for r in rs]
-        tailr = [r.get("tail_power", 0.0) / max(r.get("power", 1.0), 1e-6) for r in rs]
-        idx = {int(np.argmax([r["hits"] for r in rs])),
-               int(np.argmax(peak)), int(np.argmax(tailr))}
-        return [rs[i] for i in sorted(idx)]
     if kind == "power":
         # 密集素材里回合长度都差不多，能拉开差距的是单拍的绝对力量
         return sorted(rs, key=lambda r: -r.get("peak_power", r.get("power", 0.0)))
-    if kind == "weak":
-        # 已废弃的 kill 用的是同一个比值。实测 tail_power 只有 48% 取到真挥拍
-        # （96 个回合 / 5 个视频）—— 回合结尾多是台面弹跳，不是那记制胜球。
-        # weak 暂留但可信度低，见 README。
-        def ratio(r):
-            return r.get("tail_power", 0.0) / max(r.get("power", 0.0), 1e-6)
-        cand = [r for r in rs if r["hits"] >= cfg.get("end_min_hits", 4)]
-        return sorted(cand, key=ratio)
     return sorted(rs, key=lambda r: -r["score"])
 
 

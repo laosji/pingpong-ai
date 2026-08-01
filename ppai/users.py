@@ -4,6 +4,9 @@
   python -m ppai.users list              列出所有用户
   python -m ppai.users grant <uid> <视频路径>...   把已有文件登记到某用户名下
   python -m ppai.users rm <uid>          删除用户
+  python -m ppai.users invite [个数] [每码可剪几个视频] [有效天数]
+                                        生成邀请码，默认 20 个 / 3 个视频 / 60 天
+  python -m ppai.users invites           列出邀请码和认领情况
 """
 from __future__ import annotations
 
@@ -11,7 +14,7 @@ import os
 import sys
 
 from . import store
-from .cli import probe
+from .media import probe
 
 BASE = os.environ.get("PIPO_BASE_URL", "http://127.0.0.1:8020")
 
@@ -31,6 +34,29 @@ def main(argv=None) -> int:
         print("已创建: %s (%s)" % (u["name"], u["id"]))
         print("魔法链接（发给本人，点一次即可，之后靠 cookie）：")
         print("  " + _link(u["token"]))
+        return 0
+
+    if cmd == "invite":
+        n = int(a[1]) if len(a) > 1 else 20
+        q = int(a[2]) if len(a) > 2 else 3
+        d = float(a[3]) if len(a) > 3 else 60
+        codes = store.make_invites(n, quota=q, days=d)
+        print("已生成 %d 个邀请码，每个可剪 %d 个视频，%.0f 天有效：" % (n, q, d))
+        for c in codes:
+            print("  " + c)
+        return 0
+
+    if cmd == "invites":
+        iv = store.list_invites()
+        if not iv:
+            print("还没有邀请码。用 `invite` 生成。"); return 0
+        names = {u["id"]: u["name"] for u in store.list_users()}
+        free = sum(1 for x in iv if not x["claimed_by"])
+        print("共 %d 个，未认领 %d 个\n" % (len(iv), free))
+        print("%-14s %5s %s" % ("邀请码", "配额", "认领者"))
+        for x in iv:
+            who = names.get(x["claimed_by"], x["claimed_by"] or "—")
+            print("%-14s %5d %s" % (x["code"], x["quota"], who))
         return 0
 
     if cmd == "list":

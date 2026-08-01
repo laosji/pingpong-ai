@@ -42,13 +42,10 @@ def summarize(rs: List[Dict], hits: np.ndarray, amps: np.ndarray,
     n = np.array([r["hits"] for r in rs])
     dur = np.array([r["end"] - r["start"] for r in rs])
     peak = np.array([r.get("peak_power", 0.0) for r in rs])
-    tail = np.array([r.get("tail_power", 0.0) for r in rs])
     play_s = playing_time(np.asarray(hits), busy_gap)
 
     i_long = int(np.argmax(n))
     i_pow = int(np.argmax(peak))
-    i_tail = int(np.argmax(tail / np.maximum(
-        np.array([r.get("power", 1.0) for r in rs]), 1e-6)))
 
     return {
         "duration": round(duration, 1),
@@ -67,11 +64,6 @@ def summarize(rs: List[Dict], hits: np.ndarray, amps: np.ndarray,
                               "duration": round(float(dur[i_long]), 1)},
             "strongest_hit": {"index": i_pow, "power": round(float(peak[i_pow]), 1),
                               "start": rs[i_pow]["start"], "end": rs[i_pow]["end"]},
-            "best_finish": {"index": i_tail,
-                            "tail_power": round(float(tail[i_tail]), 1),
-                            "ratio": round(float(tail[i_tail] /
-                                                 max(rs[i_tail].get("power", 1.0), 1e-6)), 2),
-                            "start": rs[i_tail]["start"], "end": rs[i_tail]["end"]},
         },
     }
 
@@ -91,16 +83,13 @@ def report(s: Dict) -> None:
     print("  回合 %d 个 | 每回合中位 %d 个瞬态 / %.1f 秒"
           % (s["rally_count"], s["rally_len_median"], s["rally_dur_median"]))
     r = s["records"]
-    print("\n  精彩瞬间（三项纪录）")
+    print("\n  全场之最")
     print("    最长相持   %s-%s  %d 个瞬态，%.1f 秒"
           % (_mmss(r["longest_rally"]["start"]), _mmss(r["longest_rally"]["end"]),
              r["longest_rally"]["hits"], r["longest_rally"]["duration"]))
     print("    最强击球   %s-%s  力量 %.0f"
           % (_mmss(r["strongest_hit"]["start"]), _mmss(r["strongest_hit"]["end"]),
              r["strongest_hit"]["power"]))
-    print("    最强收尾   %s-%s  收尾/整体 %.2f 倍"
-          % (_mmss(r["best_finish"]["start"]), _mmss(r["best_finish"]["end"]),
-             r["best_finish"]["ratio"]))
     print("\n  注：瞬态数不等于挥拍数 —— 检测器准确率约 0.38，"
           "「%d 个瞬态」这类绝对量偏高。" % s["transient_count"])
     print("      排名和倍数关系受影响小得多（误报是弥散的，对各回合大致同等影响）。")
