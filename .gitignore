@@ -37,3 +37,13 @@ android/.idea/
 *.egg-info/
 __pycache__/
 .DS_Store
+
+# 签名密钥，绝不进版本库
+android/keystore.properties
+*.jks
+*.keystore
+
+# 蒸馏的中间产物：12 万条配方 + 教师给的目标 + 训练出来的权重。
+# 全部可以由 tools/distill.py 重新生成，而且 recipes.npy 里的下标
+# 只对生成它的那批素材有意义，换一批素材就是无效的。
+distill/
