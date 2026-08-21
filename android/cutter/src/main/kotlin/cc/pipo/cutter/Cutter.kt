@@ -82,15 +82,32 @@ object Cutter {
      * [onProgress] 传 0-100；Transformer 的进度是尽力而为的，
      * 拿不到时不会回调，所以调用方不能依赖它一定走到 100。
      */
+    /**
+     * 超时预算。**不能用一个固定的大数。**
+     *
+     * 原来写死 30 分钟。真机上撞到过：Android 7.1 的设备上 Transformer
+     * 配好 codec 之后永久挂起，而素材只有 45 秒、正常两秒切完 ——
+     * 用户要盯着一个不动的进度条等满半小时才看到失败。
+     *
+     * 按成片长度给：每秒成片给 20 秒预算（老机器软编能慢到这个量级），
+     * 保底 90 秒，封顶 10 分钟。封顶是因为超过这个数说明不是「慢」而是
+     * 「卡住了」，再等下去没有意义。
+     */
+    private fun deadlineFor(segments: List<Segment>): Long {
+        val outS = segments.sumOf { (it.endS - it.startS).coerceAtLeast(0.0) }
+        return (outS * 20_000).toLong().coerceIn(90_000L, 10 * 60_000L)
+    }
+
     fun cut(
         context: Context,
         segments: List<Segment>,
         out: File,
         canvas: Canvas,
-        timeoutMs: Long = 30 * 60 * 1000,
+        timeoutMs: Long = -1,          // 负数 = 按成片长度自动算，见 deadlineFor
         onProgress: ((Int) -> Unit)? = null,
     ): Outcome {
         if (segments.isEmpty()) return Outcome.Failed("没有要剪的片段", null)
+        val budget = if (timeoutMs > 0) timeoutMs else deadlineFor(segments)
 
         val items = segments.map { seg ->
             val startMs = (seg.startS * 1000).roundToLong().coerceAtLeast(0)
@@ -162,7 +179,7 @@ object Cutter {
             t.start(composition, out.absolutePath)
         }
 
-        val deadline = System.currentTimeMillis() + timeoutMs
+        val deadline = System.currentTimeMillis() + budget
         val holder = ProgressHolder()
         synchronized(lock) {
             while (result == null && System.currentTimeMillis() < deadline) {
@@ -184,6 +201,6 @@ object Cutter {
             if (t != null) handler.post { runCatching { t.cancel() } }
         }
         handler.post { worker.quitSafely() }
-        return r ?: Outcome.Failed("超时：超过 ${timeoutMs / 1000} 秒仍未完成", null)
+        return r ?: Outcome.Failed("超时：超过 ${budget / 1000} 秒仍未完成", null)
     }
 }
