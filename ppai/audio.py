@@ -62,17 +62,27 @@ def _adaptive_threshold(env: np.ndarray, frame_rate: float, win_s: float, k: flo
     """局部中位数 + k*MAD。球馆底噪基本平稳，用鲁棒统计比全局阈值稳得多。
 
     按整块算统计量再线性插值，避免 O(N*W) 的滑动中位数。
+
+    **最后一块只用真实存在的那部分算。** 原来是用 env[-1] 重复补齐到整块，
+    于是补进去的一串常数把 MAD 压下去 —— 实测 7.4 分钟素材最后一块有 49%
+    是填充，片尾 2 秒的阈值只有应有的一半（36.7 vs 73.2），
+    检测器在每段视频的结尾都变成两倍敏感，凭空多出候选。
+    镜像填充也不对：那是把真实数据算了两遍，仍然改变分布。
     """
     w = max(1, int(round(win_s * frame_rate)))
     n_blocks = max(1, int(np.ceil(len(env) / w)))
-    pad = n_blocks * w - len(env)
-    padded = np.concatenate([env, np.repeat(env[-1:], pad)]) if pad else env
-    blocks = padded.reshape(n_blocks, w)
+    med = np.empty(n_blocks)
+    mad = np.empty(n_blocks)
+    for i in range(n_blocks):
+        seg = env[i * w:(i + 1) * w]              # 最后一块自然就短一截
+        m = np.median(seg)
+        med[i] = m
+        mad[i] = np.median(np.abs(seg - m)) * 1.4826
 
-    med = np.median(blocks, axis=1)
-    mad = np.median(np.abs(blocks - med[:, None]), axis=1) * 1.4826
-
-    centers = np.arange(n_blocks) * w + w / 2.0
+    # 块中心按**真实**长度算：最后一块可能只有半块，中心不在 w/2 处，
+    # 用 w/2 会把它的统计量插值到数据范围之外。
+    centers = np.array([(i * w + min((i + 1) * w, len(env))) / 2.0
+                        for i in range(n_blocks)])
     grid = np.arange(len(env), dtype=np.float64)
     med_i = np.interp(grid, centers, med)
     mad_i = np.interp(grid, centers, mad)

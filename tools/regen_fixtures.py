@@ -23,7 +23,61 @@ ASSET = os.path.join(ROOT, "android/cutter/src/androidTest/assets")
 CLIP = os.path.join(ASSET, "land.mp4")
 
 
+def _select_rows(rs, h, cfg, dur):
+    """select 的基准。给回合打一个假 src —— 夹片长是按来源查表的，
+    而这一层的基准只有一个源。"""
+    ranked = [dict(r, src="fixture") for r in highlight.rank(rs, "best", cfg)]
+    return [{"start": s["start"], "end": s["end"], "hits": s["hit_count"]}
+            for s in highlight.select(ranked, h, durations={"fixture": dur})]
+
+
+def selfcheck() -> None:
+    """跑基准之前先自检几条不变量。
+
+    放在这里而不是单独的测试套件：Python 侧没有 pytest，而**会动音频代码的人
+    正好就是要重新生成基准的人**，这一步他一定会跑到。
+
+    1) 包络的分块必须和一次算完完全相同。分块只是为了内存
+       （block=4000 帧 = 40 秒），一小时素材才不会一次吃掉几百 MB。
+       而基准素材只有 14 秒（1399 帧），**跨块那条路径基准根本测不到** ——
+       所以这里自己造一段足够长的信号来测。
+    2) 自适应阈值的最后一块只能用真实数据算。原来用 env[-1] 重复补齐，
+       那串常数把 MAD 压掉一半，片尾 2 秒的检测灵敏度凭空翻倍。
+    """
+    from ppai import audio as A
+    cfg = config.load()["audio"]
+    rng = np.random.default_rng(3)
+    # 60 秒噪声加一些瞬态，保证跨 4000 帧的块边界
+    n = cfg["sr"] * 60
+    x = (rng.standard_normal(n) * 0.01).astype(np.float32)
+    for at in rng.integers(0, n - 500, 300):
+        x[at:at + 200] += rng.standard_normal(200).astype(np.float32) * 0.4
+
+    env_blocked, _ = A.onset_envelope(x, cfg)
+    src = open(os.path.join(ROOT, "ppai", "audio.py")).read()
+    ns = {}
+    exec(compile(src.replace("block = 4000", "block = 10**9"), "oneshot", "exec"), ns)
+    env_one, _ = ns["onset_envelope"](x, cfg)
+    nb = -(-len(env_blocked) // 4000)
+    assert nb > 1, "自检信号没跨块，测不到要测的东西"
+    d = float(np.abs(env_blocked - env_one).max())
+    assert d == 0.0, "分块和一次算完不一致，最大差 %.3e" % d
+    print("  自检：包络跨 %d 块，与一次算完逐帧相同" % nb)
+
+    # 阈值不能因为末块补齐而塌掉：把信号截成半块长，看尾部阈值是否合理
+    env, fr = A.onset_envelope(x, cfg)
+    w = max(1, int(round(cfg["noise_win_s"] * fr)))
+    cut = len(env) - w // 2                      # 故意留半块
+    thr = A._adaptive_threshold(env[:cut], fr, cfg["noise_win_s"], cfg["k_mad"])
+    tail, body = thr[cut - w // 2:].mean(), thr[:cut - w].mean()
+    assert tail > body * 0.7, (
+        "片尾阈值塌了（尾 %.2f vs 正文 %.2f）——末块八成又在拿补齐的常数算统计量"
+        % (tail, body))
+    print("  自检：末块只有半块时，片尾阈值 %.1f / 正文 %.1f，没有塌" % (tail, body))
+
+
 def main() -> None:
+    selfcheck()
     cfg = config.load()
     a, h = cfg["audio"], cfg["highlight"]
     m = rerank.load()
@@ -93,6 +147,10 @@ def main() -> None:
         "rank_longest": [round(r["start"], 6) for r in highlight.rank(rs, "longest", cfg)[:10]],
         "rank_power": [round(r["start"], 6) for r in highlight.rank(rs, "power", cfg)[:10]],
         "rank_best": [round(r["start"], 6) for r in highlight.rank(rs, "best", cfg)[:10]],
+        # 出片阶段（滤短 + 扩边 + 合并 + 夹到片长）。安卓一度整个没有这一步，
+        # 直接拿 rallies 去切 —— 切点落在击球声那一帧，看不到引拍。
+        # 有了这条基准，两边再走散就会当场失败。
+        "select_best": _select_rows(rs, h, cfg, dur),
     }, open(os.path.join(CORE, "rally_expected.json"), "w"),
         ensure_ascii=False, separators=(",", ":"))
     with open(os.path.join(CORE, "highlight.properties"), "w") as f:
@@ -109,7 +167,10 @@ def main() -> None:
                        ("sparseGapS", h["sparse_gap_s"]), ("duration", dur),
                        ("wRallyLength", w["rally_length"]), ("wPower", w.get("power", 0.0)),
                        ("wHitRate", w["hit_rate"]), ("wMotion", w["motion"]),
-                       ("wDuration", w["duration"])):
+                       ("wDuration", w["duration"]),
+                       ("clipMinS", h["clip_min_s"]), ("padStartS", h["pad_start_s"]),
+                       ("padEndS", h["pad_end_s"]),
+                       ("finalPadEndS", h.get("final_pad_end_s", 0.0))):
             f.write("%s=%s\n" % (kk, vv))
     nb = sum(1 for r in rs if r["ended_with_bounce"])
     print("  分组：%d 个回合（%s），其中 %d 个以弹跳收尾" % (len(rs), kind["kind"], nb))

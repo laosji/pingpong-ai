@@ -456,10 +456,13 @@ def _pick_for(kind: str, an: Dict, hcfg: Dict) -> List[Dict]:
                 s_["id"] = len(out) + 1
                 out.append(s_)
         return out
+    durs = {p["path"]: p["duration"] for p in an["per"]}
     if kind == "spot":
         return highlight.select(highlight.rank(an["pool"], kind, hcfg), hcfg,
-                                total_s=hcfg.get("spot_seconds", 45))
-    return highlight.select(highlight.rank(an["pool"], kind, hcfg), hcfg)
+                                total_s=hcfg.get("spot_seconds", 45),
+                                durations=durs)
+    return highlight.select(highlight.rank(an["pool"], kind, hcfg), hcfg,
+                            durations=durs)
 
 
 def _order(video_paths: List[str], ordered: bool) -> List[str]:

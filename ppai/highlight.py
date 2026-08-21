@@ -453,13 +453,25 @@ def dedupe(picked: List[Dict], used: List[Dict], cfg: Dict) -> List[Dict]:
     return out
 
 
-def select(rs: List[Dict], cfg: Dict, total_s: Optional[float] = None) -> List[Dict]:
+def select(rs: List[Dict], cfg: Dict, total_s: Optional[float] = None,
+           durations: Optional[Dict[str, float]] = None) -> List[Dict]:
     """取前 N 个（或凑满目标时长），再按时间顺序排列 —— 集锦按时间线看更自然。
 
     这里的 clip_min_s 和 rallies() 的 min_duration_s 是两回事：
     后者是「算不算一个回合」（对着真值调，越准越好，0.3 秒的短回合也算），
     前者是「值不值得剪成一段」（0.3 秒的片段没法看）。
     统计要准，出片要能看，两个目标不同，阈值不能共用。
+
+    [durations] 是每个源文件的长度（路径 -> 秒）。**不传就夹不住结尾** ——
+    扩边和 final_pad_end_s 会把最后一段推到视频之外（实测 45.0 秒的素材
+    出过 end=45.95）。ffmpeg 遇到 EOF 会自己停，所以成片不会坏，但报出去的
+    时长和 hit_rate 是错的；Media3 拿到越界的 setEndPositionMs 就未必这么宽容。
+
+    **src 必须一路带到输出。** 多素材时每个视频的时间轴各自从 0 开始，
+    丢了 src 之后 render.py 会回落到 `video_path`（第一个视频），
+    于是所有片段都从第一个视频里剪，用的却是别的视频的时间戳 ——
+    成片看着是真实画面，只是剪错了地方，不报任何错。
+    合并也必须先比 src，否则两个视频里时间恰好重叠的片段会被并成一段。
     """
     pad_a, pad_b = cfg["pad_start_s"], cfg["pad_end_s"]
     clip_min = float(cfg.get("clip_min_s", 0.0))
@@ -476,9 +488,11 @@ def select(rs: List[Dict], cfg: Dict, total_s: Optional[float] = None) -> List[D
     # 扩边后相邻片段会重叠，直接输出会在成片里出现重复画面。
     # 重叠说明它们本就是被 gap 规则切开的同一段相持，合并回去。
     merged: List[Dict] = []
-    for r in sorted(picked, key=lambda x: x["start"]):
+    # 先按来源分组再按时间排 —— 只按时间排会把不同视频的片段交错在一起，
+    # 相邻两项可能来自两个文件，合并判据就失效了。
+    for r in sorted(picked, key=lambda x: (str(x.get("src") or ""), x["start"])):
         a, b = max(0.0, r["start"] - pad_a), r["end"] + pad_b
-        if merged and a <= merged[-1]["_b"]:
+        if merged and merged[-1]["src"] == r.get("src") and a <= merged[-1]["_b"]:
             m = merged[-1]
             m["_b"] = max(m["_b"], b)
             m["hits"] += r["hits"]
@@ -489,6 +503,7 @@ def select(rs: List[Dict], cfg: Dict, total_s: Optional[float] = None) -> List[D
             m["last_hit"] = max(m["last_hit"], r.get("last_hit", 0.0))
         else:
             merged.append({"_a": a, "_b": b, "hits": r["hits"], "score": r["score"],
+                           "src": r.get("src"),
                            "power": r.get("power", 0.0),
                            "tail_power": r.get("tail_power", 0.0),
                            "peak_power": r.get("peak_power", 0.0),
@@ -503,11 +518,24 @@ def select(rs: List[Dict], cfg: Dict, total_s: Optional[float] = None) -> List[D
         last = max(merged, key=lambda m: m["_b"])
         last["_b"] = max(last["_a"] + cfg.get("clip_min_s", 1.0), last["_b"] + extra)
 
+    # 夹到片长。放在最后而不是扩边时 —— final_pad_end_s 也会往外推。
+    if durations:
+        for m in merged:
+            d = durations.get(m.get("src"))
+            if d is not None:
+                m["_b"] = min(m["_b"], float(d))
+        merged = [m for m in merged if m["_b"] > m["_a"]]
+
+    # 合并时是按 (src, start) 排的，输出要回到纯时间顺序 ——
+    # 集锦按时间线看更自然，单素材时这一步没有区别。
+    merged.sort(key=lambda m: m["_a"])
+
     out = []
     for i, m in enumerate(merged, 1):
         dur = m["_b"] - m["_a"]
         out.append({
             "id": i,
+            "src": m.get("src"),
             "start": round(m["_a"], 2),
             "end": round(m["_b"], 2),
             "duration": round(dur, 2),

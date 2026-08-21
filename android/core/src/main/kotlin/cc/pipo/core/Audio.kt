@@ -111,20 +111,28 @@ object Audio {
         if (n == 0) return FloatArray(0)
         val w = max(1, (winS * frameRate).roundToInt())
         val nBlocks = max(1, Math.ceil(n.toDouble() / w).toInt())
-        val padded = DoubleArray(nBlocks * w) { if (it < n) env[it].toDouble() else env[n - 1].toDouble() }
 
+        // **最后一块只用真实存在的那部分算，不补齐。**
+        // 原来是用 env[n-1] 重复填到整块，那一串常数会把 MAD 压下去 ——
+        // 实测 7.4 分钟素材最后一块有 49% 是填充，片尾 2 秒的阈值
+        // 只剩应有值的一半（36.7 vs 73.2），检测器在每段视频的结尾
+        // 都变成两倍敏感，凭空多出候选。
         val med = DoubleArray(nBlocks)
         val mad = DoubleArray(nBlocks)
-        val buf = DoubleArray(w)
         for (b in 0 until nBlocks) {
-            System.arraycopy(padded, b * w, buf, 0, w)
+            val lo = b * w
+            val hi = minOf(lo + w, n)
+            val len = hi - lo
+            val buf = DoubleArray(len) { env[lo + it].toDouble() }
             val m = median(buf.copyOf())
             med[b] = m
-            for (i in 0 until w) buf[i] = abs(padded[b * w + i] - m)
-            mad[b] = median(buf.copyOf()) * 1.4826
+            for (i in 0 until len) buf[i] = abs(buf[i] - m)
+            mad[b] = median(buf) * 1.4826
         }
 
-        val centers = DoubleArray(nBlocks) { it * w + w / 2.0 }
+        // 块中心按**真实**长度算：最后一块可能只有半块，中心不在 w/2 处，
+        // 用 w/2 会把它的统计量插值到数据范围之外。
+        val centers = DoubleArray(nBlocks) { (it * w + minOf((it + 1) * w, n)) / 2.0 }
         // MAD 可能为 0（极安静段），给下限，否则阈值塌到 0 会满屏误检
         val floor = percentile(env, 60.0) * 0.05
         return FloatArray(n) { i ->

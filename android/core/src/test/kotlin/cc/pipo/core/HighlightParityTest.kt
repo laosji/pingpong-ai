@@ -53,6 +53,10 @@ class HighlightParityTest {
         wHitRate = s("wHitRate").toDouble(),
         wMotion = s("wMotion").toDouble(),
         wDuration = s("wDuration").toDouble(),
+        clipMinS = s("clipMinS").toDouble(),
+        padStartS = s("padStartS").toDouble(),
+        padEndS = s("padEndS").toDouble(),
+        finalPadEndS = s("finalPadEndS").toDouble(),
     )
 
     private val hits = f64("rally_hits.f64")
@@ -74,7 +78,8 @@ class HighlightParityTest {
 
     private fun objField(name: String): List<String> {
         // "rallies":[{...},{...}] —— 按对象切开
-        val i = json.indexOf("\"rallies\":")
+        val i = json.indexOf("\"$name\":")
+        require(i >= 0) { "基准里没有 $name" }
         val a = json.indexOf('[', i)
         val out = ArrayList<String>()
         var depth = 0
@@ -182,5 +187,52 @@ class HighlightParityTest {
         assertTrue(got.all { it.duration >= cfg.longestMinS },
             "有回合短于 ${cfg.longestMinS} 秒：${got.filter { it.duration < cfg.longestMinS }.map { it.duration }}")
         println("  最长相持 ${got.size} 个，最短 ${"%.1f".format(got.minOfOrNull { it.duration } ?: 0.0)} 秒")
+    }
+
+    /**
+     * 出片阶段对齐。**这一层安卓一度整个没有** —— 直接拿 rallies 去切，
+     * 切点落在击球声那一帧（此时挥拍已经做完），碎片也没滤掉。
+     * 同一段素材实测：没有 select 是 8 段 12.9 秒、其中 4 段短于 1.5 秒；
+     * 有 select 是 4 段 14.5 秒。这条基准就是防止它再被绕过去。
+     */
+    @Test
+    fun `出片片段与 Python 一致`() {
+        val rs = Highlight.score(
+            Highlight.ralliesGated(hits, amps, cfg), DoubleArray(0), DoubleArray(0), cfg)
+        val want = objField("select_best")
+        val got = Highlight.select(Highlight.rank(rs, "best", cfg), duration, cfg)
+        assertEquals(want.size, got.size,
+            "片段数不一致：Python ${want.size}，Kotlin ${got.size}")
+        for (i in want.indices) {
+            assertTrue(abs(got[i].start - field(want[i], "start")) < 1e-6,
+                "第 ${i + 1} 段起点：Python ${field(want[i], "start")}，Kotlin ${got[i].start}")
+            assertTrue(abs(got[i].end - field(want[i], "end")) < 1e-6,
+                "第 ${i + 1} 段终点：Python ${field(want[i], "end")}，Kotlin ${got[i].end}")
+        }
+        println("  出片 ${got.size} 段一致，最短 ${"%.2f".format(got.minOf { it.duration })} 秒")
+    }
+
+    /** 扩边和 finalPadEndS 都会往外推，不夹的话 Media3 会拿到越界的结束位置。 */
+    @Test
+    fun `片段不会超出原片长度`() {
+        val rs = Highlight.score(
+            Highlight.ralliesGated(hits, amps, cfg), DoubleArray(0), DoubleArray(0), cfg)
+        val got = Highlight.select(Highlight.rank(rs, "best", cfg), duration, cfg)
+        val over = got.filter { it.end > duration + 1e-9 }
+        assertTrue(over.isEmpty(), "有片段越界：${over.map { it.end }}，片长 $duration")
+        println("  ${got.size} 段都在 $duration 秒内，最大 end ${"%.2f".format(got.maxOf { it.end })}")
+    }
+
+    /** 碎片必须在扩边**之前**滤掉，否则扩边会把 0.5 秒的片段撑到 1.6 秒混进来。 */
+    @Test
+    fun `短于 clipMinS 的回合不出片`() {
+        val rs = Highlight.score(
+            Highlight.ralliesGated(hits, amps, cfg), DoubleArray(0), DoubleArray(0), cfg)
+        val tiny = rs.filter { it.duration < cfg.clipMinS }
+        val got = Highlight.select(Highlight.rank(rs, "best", cfg), duration, cfg)
+        // 扩边后每段至少有 clipMinS + padStartS + padEndS 这么长
+        assertTrue(got.all { it.duration >= cfg.clipMinS },
+            "有片段短于 ${cfg.clipMinS} 秒：${got.map { it.duration }}")
+        println("  ${tiny.size} 个碎片回合被滤掉，出片 ${got.size} 段")
     }
 }

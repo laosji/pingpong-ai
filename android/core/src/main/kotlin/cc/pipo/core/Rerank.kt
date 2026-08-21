@@ -47,7 +47,11 @@ object Rerank {
     private const val WIN = 32000        // 1 秒
     private const val HOP = 16000        // 0.5 秒
     private const val BATCH = 64
-    private const val DIM = 2048
+    // 教师（CNN14）给 2048 维嵌入；蒸馏出来的学生直接给 1 维 logit。
+    // **维度不写死，跟着权重文件走** —— 两个模型走的是同一条代码路径，
+    // 学生配的 rerank.bin 是 coef=[1.0] / b=0，于是 probability() 算出来
+    // 正好是 sigmoid(logit)，门禁的 0.10 和重排的 0.6 都不用重新标定。
+    private const val TEACHER_DIM = 2048
 
     /**
      * 单次整段处理的时长上限。超过这个就必须分段 —— 32kHz 的 float PCM
@@ -63,6 +67,9 @@ object Rerank {
         internal val intercept: Float,
         internal val inputName: String,
     ) : Closeable {
+        /** 嵌入宽度。教师 2048，学生 1 —— 由权重文件决定，不由代码假设。 */
+        internal val dim: Int get() = coef.size
+
         override fun close() { runCatching { session.close() } }
     }
 
@@ -96,7 +103,9 @@ object Rerank {
             require(ver == 1) { "rerank.bin 版本 $ver 不认识" }
             val n = hb.int
             val b = hb.float
-            require(n == DIM) { "系数维度 $n，期望 $DIM" }
+            require(n == TEACHER_DIM || n == 1) {
+                "系数维度 $n：只认 $TEACHER_DIM（CNN14 教师）或 1（蒸馏学生）"
+            }
             val raw = ByteArray(4 * n)
             raf.readFully(raw)
             val fb = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
@@ -104,13 +113,23 @@ object Rerank {
         }
     }
 
-    /** 滑窗提嵌入。返回 (窗中心时刻, [N][2048])。 */
-    fun embed(pcm32k: FloatArray, m: Model): Pair<DoubleArray, Array<FloatArray>> {
+    /**
+     * 滑窗提嵌入。返回 (窗中心时刻, [N][2048])。
+     *
+     * [onProgress] 收到 (已完成窗数, 总窗数)。**这一步占整条链路的绝大部分时间**
+     * （45 秒素材上约 150 秒，而解码 + 检测 + 切片加起来才几十秒），
+     * 不报进度的话界面上就是两分多钟的不定态转圈，用户没法判断是慢还是卡死。
+     * 窗数在开始前就算得出来，所以这里给的是真百分比，不是编的。
+     */
+    fun embed(
+        pcm32k: FloatArray, m: Model,
+        onProgress: ((Int, Int) -> Unit)? = null,
+    ): Pair<DoubleArray, Array<FloatArray>> {
         var x = pcm32k
         if (x.size < WIN) x = x.copyOf(WIN)          // 和 Python 的 np.pad 一致：补零
         val n = 1 + (x.size - WIN) / HOP
         val times = DoubleArray(n) { (it.toLong() * HOP + WIN / 2.0) / PANNS_SR }
-        val feats = Array(n) { FloatArray(DIM) }
+        val feats = Array(n) { FloatArray(m.dim) }
 
         var i = 0
         while (i < n) {
@@ -122,10 +141,11 @@ object Rerank {
                 m.session.run(mapOf(m.inputName to t)).use { r ->
                     @Suppress("UNCHECKED_CAST")
                     val out = r[0].value as Array<FloatArray>
-                    for (k in 0 until b) System.arraycopy(out[k], 0, feats[i + k], 0, DIM)
+                    for (k in 0 until b) System.arraycopy(out[k], 0, feats[i + k], 0, m.dim)
                 }
             }
             i += b
+            onProgress?.invoke(i, n)
         }
         return times to feats
     }
@@ -133,7 +153,7 @@ object Rerank {
     /** sigmoid(x·coef + b)。先裁再取指数，否则大负值那侧会溢出成 NaN。 */
     fun probability(f: FloatArray, m: Model): Double {
         var z = m.intercept.toDouble()
-        for (j in 0 until DIM) z += f[j].toDouble() * m.coef[j]
+        for (j in 0 until m.dim) z += f[j].toDouble() * m.coef[j]
         return 1.0 / (1.0 + exp(-z.coerceIn(-700.0, 700.0)))
     }
 

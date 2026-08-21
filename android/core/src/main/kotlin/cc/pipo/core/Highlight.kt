@@ -46,6 +46,13 @@ object Highlight {
         val wHitRate: Double = 0.15,
         val wMotion: Double = 0.15,
         val wDuration: Double = 0.10,
+        // 出片阈值。和上面那些「统计口径」的阈值是两回事 ——
+        // 统计要准（0.3 秒的回合也算），出片要能看（0.3 秒的片段没法看）。
+        // 数值跟 config.yaml 的 highlight 段保持一致。
+        val clipMinS: Double = 1.5,
+        val padStartS: Double = 0.4,      // 前扩：补上引拍。击球声响起时挥拍已经做完了
+        val padEndS: Double = 0.7,        // 后扩：留给球落地和反应
+        val finalPadEndS: Double = 0.3,   // 只加在最后一段，可为负
     )
 
     data class Rally(
@@ -64,6 +71,14 @@ object Highlight {
     }
 
     data class Kind(val kind: String, val busy: Double, val medianGap: Double)
+
+    /**
+     * 主题集锦取前几段。和 config.yaml 的 `highlight.top_n` 保持一致 ——
+     * 之前安卓侧写死 10 而桌面是 20，同一段素材同一个主题在两个平台出片数
+     * 不一样，而那个 10 没有任何理由说明。20 是有依据的那个：
+     * 片段平均只有 3 秒，要凑够能看的时长就得多取几段。
+     */
+    const val DEFAULT_TOP_N = 20
 
     /**
      * 找球落地后的连续弹跳，返回弹跳起点（回合真正结束的地方）。
@@ -242,6 +257,69 @@ object Highlight {
         // 密集素材里回合长度都差不多，能拉开差距的是单拍的绝对力量
         "power" -> rs.sortedByDescending { if (it.peakPower != 0.0) it.peakPower else it.power }
         else -> rs.sortedByDescending { it.score }
+    }
+
+    /** 出片用的一段。和 [Rally] 的区别见 [select] 的注释。 */
+    data class Clip(val start: Double, val end: Double, val hits: Int, val score: Double) {
+        val duration: Double get() = end - start
+    }
+
+    /**
+     * 从排好序的回合里选出**能看的**片段：滤短 → 扩边 → 合并 → 夹到片长。
+     *
+     * **这一步以前安卓整个没有，直接拿 rallies 去切了。** 后果实测过，
+     * 同一段 45 秒素材：
+     *
+     *     没有 select   8 段 12.9 秒   1.2 0.6 1.6 0.7 0.5 2.2 3.6 2.4
+     *     有  select    4 段 14.5 秒   2.7 3.3 4.7 3.8
+     *
+     * 八段里四段短于 [Config.clipMinS]，0.5 秒的片段一闪就过去了。
+     * 更要紧的是扩边：回合的 start 是**第一次击球声**的时刻，而声音响起时
+     * 挥拍已经做完了 —— 不往前留 [Config.padStartS] 就直接切在球飞出去之后，
+     * 看不到引拍；结尾不留 [Config.padEndS]，最后一拍的球还没落地就黑屏。
+     *
+     * 三个阈值各管各的，别合并：
+     *   * [Config.minDurationS]（在 rallies 里）—— 算不算一个回合，对着真值调
+     *   * [Config.clipMinS]                   —— 值不值得剪成一段，对着观感调
+     *   * [Config.longestMinS]（在 rank 里）   —— 配不配叫「相持」
+     */
+    fun select(rs: List<Rally>, duration: Double, c: Config,
+               topN: Int = DEFAULT_TOP_N): List<Clip> {
+        val kept = if (c.clipMinS > 0) rs.filter { it.duration >= c.clipMinS } else rs
+        val picked = kept.take(topN)
+        if (picked.isEmpty()) return emptyList()
+
+        // 扩边后相邻片段会重叠，直接输出会在成片里出现重复画面。
+        // 重叠说明它们本就是被 gap 规则切开的同一段相持，合并回去。
+        val merged = ArrayList<DoubleArray>()          // [_a, _b, hits, score]
+        for (r in picked.sortedBy { it.start }) {
+            val a = maxOf(0.0, r.start - c.padStartS)
+            val b = r.end + c.padEndS
+            val last = merged.lastOrNull()
+            if (last != null && a <= last[1]) {
+                last[1] = maxOf(last[1], b)
+                last[2] += r.hits
+                last[3] = maxOf(last[3], r.score)
+            } else {
+                merged.add(doubleArrayOf(a, b, r.hits.toDouble(), r.score))
+            }
+        }
+
+        // 成片最后一段多留一点：整片在最后一拍后立刻黑屏很仓促。
+        // 只动最后一段而不是全局加长 —— 全局 +1 秒会让真打球占比从 74% 掉到 60%。
+        if (c.finalPadEndS != 0.0) {
+            val last = merged.maxByOrNull { it[1] }!!
+            last[1] = maxOf(last[0] + c.clipMinS, last[1] + c.finalPadEndS)
+        }
+
+        // 夹到片长。**放在最后** —— finalPadEndS 也会往外推。
+        // 不夹的话 Media3 会拿到越界的 setEndPositionMs（实测 45.0 秒的素材
+        // 能算出 45.95）。
+        return merged.mapNotNull { m ->
+            val b = minOf(m[1], duration)
+            if (b <= m[0]) null
+            else Clip(m[0], b, m[2].toInt(), m[3])
+        }
     }
 
     /** np.percentile 的默认线性插值法（会就地排序副本）。 */
