@@ -1,14 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  启动图标的前景：一颗带运动轨迹的球。
+  启动图标的前景：一台摄像机，镜头就是那颗球。
 
-  自适应图标的画布是 108x108，但外圈会被各家启动器裁成圆/方圆/水滴，
-  只有中间 72x72 是保证不被裁掉的安全区。所以内容全部收在
-  中心 66 半径以内 —— 角上放东西一定会被某个厂商的启动器切掉。
+  为什么是「合并」而不是「相机上方放一个球」：
+  两个物体在启动图标上会互相挤。自适应图标的画布是 108×108，但启动器
+  只显示中心的 72×72，再套圆形/方圆/水滴遮罩，**关键内容必须收在
+  中心 66 以内**。渲染到 48dp 实测过：相机加一个悬在上方的球，
+  球缩成一个点，相机的取景器还会被圆切平。
 
-  为什么是球不是球拍：球拍在小尺寸上（48dp 起）会糊成一个色块，
-  而圆形在任何尺寸下都认得出来。轨迹弧线给出方向感，
-  这也是这个产品在做的事 —— 从一段录像里找出球飞过的那些瞬间。
+  合并之后只有一个物体，可以画得更大：球在正中、最亮、面积最大，
+  48dp 下依然认得出是球，同时相机的轮廓说明了「这是个录像工具」。
+  一个形状承担两层含义。
+
+  为什么不是球拍：球拍在小尺寸上会糊成一个色块，而圆形在任何尺寸下
+  都认得出来。上一版是「球 + 运动轨迹」，渲染出来轨迹读起来像个柄，
+  整体像球拍或棒棒糖 —— 那不是想说的意思。
+
+  所有元素都收在中心 (54,54) 半径 36 之内，任何遮罩形状都不会切到。
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -16,29 +24,23 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- 运动轨迹：由淡到浓，暗示球从左下飞向右上 -->
+    <!-- 机身 -->
     <path
-        android:pathData="M28,74 C36,62 44,54 56,46"
-        android:strokeColor="#FFB067"
-        android:strokeAlpha="0.28"
-        android:strokeWidth="5"
-        android:strokeLineCap="round" />
-    <path
-        android:pathData="M40,66 C46,58 52,52 60,46"
-        android:strokeColor="#FFB067"
-        android:strokeAlpha="0.55"
-        android:strokeWidth="5"
-        android:strokeLineCap="round" />
+        android:fillColor="#FFB067"
+        android:pathData="M28,38 L61,38 A7,7 0 0 1 68,45 L68,65 A7,7 0 0 1 61,72 L28,72 A7,7 0 0 1 21,65 L21,45 A7,7 0 0 1 28,38 Z" />
 
-    <!-- 球 -->
+    <!-- 取景器。收在 x=84 以内，圆形遮罩切不到 -->
     <path
-        android:pathData="M67,41 m-15,0 a15,15 0 1,0 30,0 a15,15 0 1,0 -30,0"
-        android:fillColor="#FFB067" />
-    <!-- 高光：让它读起来是个球体而不是一个圆点 -->
+        android:fillColor="#FFB067"
+        android:pathData="M68,49 L84,40 L84,70 L68,61 Z" />
+
+    <!-- 镜头 = 球。整个图标里最大最亮的一块，视线先落在这里 -->
     <path
-        android:pathData="M61,35 a7,7 0 0,1 8,-3"
-        android:strokeColor="#FFF3E4"
-        android:strokeAlpha="0.85"
-        android:strokeWidth="3.2"
-        android:strokeLineCap="round" />
+        android:fillColor="#FFF6EFE6"
+        android:pathData="M44,55 m-13.5,0 a13.5,13.5 0 1,0 27,0 a13.5,13.5 0 1,0 -27,0" />
+
+    <!-- 高光：让它读成一个球体而不是一个圆孔 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M39.5,50.5 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0" />
 </vector>
