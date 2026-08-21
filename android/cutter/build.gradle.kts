@@ -37,7 +37,7 @@ dependencies {
     // Transformer 已经把这些处理掉了，还带硬件加速。
     implementation("androidx.media3:media3-transformer:1.5.1")
     implementation("androidx.media3:media3-effect:1.5.1")
-    implementation("androidx.media3:media3-common:1.5.1")
+    api("androidx.media3:media3-common:1.5.1")   // @UnstableApi 注解要透给 app 模块
     // ONNX Runtime：跑 PANNs CNN14 出嵌入。**只用 fp32 模型** ——
     // int8/fp16 都测过，前者让前五片段只剩 55% 重合且更慢，
     // 后者改掉 28% 的选段而优劣未验证（见 README）。

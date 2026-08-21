@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  启动图标的前景：一颗带运动轨迹的球。
+
+  自适应图标的画布是 108x108，但外圈会被各家启动器裁成圆/方圆/水滴，
+  只有中间 72x72 是保证不被裁掉的安全区。所以内容全部收在
+  中心 66 半径以内 —— 角上放东西一定会被某个厂商的启动器切掉。
+
+  为什么是球不是球拍：球拍在小尺寸上（48dp 起）会糊成一个色块，
+  而圆形在任何尺寸下都认得出来。轨迹弧线给出方向感，
+  这也是这个产品在做的事 —— 从一段录像里找出球飞过的那些瞬间。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 运动轨迹：由淡到浓，暗示球从左下飞向右上 -->
+    <path
+        android:pathData="M28,74 C36,62 44,54 56,46"
+        android:strokeColor="#FFB067"
+        android:strokeAlpha="0.28"
+        android:strokeWidth="5"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M40,66 C46,58 52,52 60,46"
+        android:strokeColor="#FFB067"
+        android:strokeAlpha="0.55"
+        android:strokeWidth="5"
+        android:strokeLineCap="round" />
+
+    <!-- 球 -->
+    <path
+        android:pathData="M67,41 m-15,0 a15,15 0 1,0 30,0 a15,15 0 1,0 -30,0"
+        android:fillColor="#FFB067" />
+    <!-- 高光：让它读起来是个球体而不是一个圆点 -->
+    <path
+        android:pathData="M61,35 a7,7 0 0,1 8,-3"
+        android:strokeColor="#FFF3E4"
+        android:strokeAlpha="0.85"
+        android:strokeWidth="3.2"
+        android:strokeLineCap="round" />
+</vector>

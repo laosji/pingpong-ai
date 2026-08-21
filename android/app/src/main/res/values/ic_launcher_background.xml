@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 和应用底色同一支暖黑。图标和应用打开后的第一屏是连着的，
+         底色不一致会有一瞬间的跳变。 -->
+    <color name="ic_launcher_background">#12100D</color>
+</resources>

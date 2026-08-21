@@ -1,8 +1,10 @@
 package cc.pipo.cutter
 
+import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import android.net.Uri
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -28,9 +30,20 @@ object AudioDecode {
      * 这里不做分块是因为检测本身需要完整序列（自适应阈值按 2 秒块统计，
      * 跨块边界要连续）。
      */
-    fun decode(path: String, targetRate: Int): FloatArray {
+    fun decode(path: String, targetRate: Int): FloatArray =
+        decode(targetRate) { it.setDataSource(path) }
+
+    /**
+     * 相册选出来的是 content:// URI，不是文件路径 —— 而且大多数情况下
+     * **拿不到真实路径**（作用域存储）。MediaExtractor 支持直接吃 URI，
+     * 所以不要试图去反解路径，那条路在新系统上会时灵时不灵。
+     */
+    fun decode(context: Context, uri: Uri, targetRate: Int): FloatArray =
+        decode(targetRate) { it.setDataSource(context, uri, null) }
+
+    private fun decode(targetRate: Int, open: (MediaExtractor) -> Unit): FloatArray {
         val ex = MediaExtractor()
-        ex.setDataSource(path)
+        open(ex)
         var track = -1
         var format: MediaFormat? = null
         for (i in 0 until ex.trackCount) {
