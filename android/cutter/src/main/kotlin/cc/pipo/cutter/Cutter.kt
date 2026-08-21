@@ -68,12 +68,41 @@ object Cutter {
      * 宽高都收到偶数 —— H.264 的色度平面是 4:2:0，奇数尺寸在不少编码器上
      * 会直接失败或者悄悄裁掉一行。
      */
+    /**
+     * 输出画布。**对齐到 16，并且限制长边不超过 1920。**
+     *
+     * 原来只保证偶数（`w - w % 2`）。两个问题，都是在一台华为机器卡在
+     * 「拼接成片」之后查出来的：
+     *
+     * **一、厂商编码器常要求 16 的倍数**，不满足时表现是**挂起而不是报错**。
+     * 手机最常见的 1080p 竖屏，宽度 1080 % 16 = 8 —— 不对齐。
+     * 而我们测过的素材（480x848、1024x512、544x960）**恰好全部 16 对齐**，
+     * 所以这条路径一次都没走到过。
+     *
+     * **二、原来把源尺寸原样透传，没有任何上限。** 4K 素材就会要求编码器
+     * 输出 3840x2160，而很多手机编码器根本编不了 4K，或者需要显式配 level。
+     * 限制长边 1920：成片是用来看的，不是用来做母版的，而 1080p 已经
+     * 超过绝大多数人分享的需要。
+     *
+     * 往下取整而不是往上：往上可能超过编码器的上限，往下最多损失几个像素。
+     */
     fun pickCanvas(sizes: List<Canvas>): Canvas {
         if (sizes.isEmpty()) return Canvas(1280, 720)
-        val w = sizes.maxOf { it.width }
-        val h = sizes.maxOf { it.height }
-        return Canvas(w - (w % 2), h - (h % 2))
+        var w = sizes.maxOf { it.width }
+        var h = sizes.maxOf { it.height }
+        val long = maxOf(w, h)
+        if (long > MAX_LONG_EDGE) {
+            val k = MAX_LONG_EDGE.toDouble() / long
+            w = (w * k).toInt()
+            h = (h * k).toInt()
+        }
+        return Canvas(align16(w), align16(h))
     }
+
+    /** 往下取到 16 的倍数，但不小于 16。 */
+    private fun align16(v: Int): Int = maxOf(16, v - (v % 16))
+
+    private const val MAX_LONG_EDGE = 1920
 
     /**
      * 剪辑并输出到 [out]。**同步**执行，调用方放到任意后台线程即可 ——

@@ -97,6 +97,9 @@ private fun App() {
 
     fun onStage(s: Pipeline.Stage) {
         stage = s
+        // 打点。卡住时「卡在哪一步、前面几步花了多久」是第一手线索，
+        // 而用户不会用 adb —— 不自己记就永远拿不到。
+        Diagnostics.mark(s.javaClass.simpleName)
         val line = when (s) {
             is Pipeline.Stage.Decoded -> "读完 %.0f 秒音轨".format(s.seconds)
             is Pipeline.Stage.Detected -> "听到 ${s.n} 次可能的击球"
@@ -128,6 +131,8 @@ private fun App() {
     // 这次的错误值不值得给「重试」按钮。只有网络中断算 ——
     // 「不是乒乓球」「空间不够」重试一百次也是同一个结果。
     var retryable by remember { mutableStateOf(false) }
+    // 留着异常对象本身，不只是消息 —— 诊断信息里要类型和堆栈
+    var lastError by remember { mutableStateOf<Throwable?>(null) }
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
@@ -146,6 +151,7 @@ private fun App() {
         error = null
         removed = emptySet(); applied = emptySet(); saved = false
         retryable = false
+        Diagnostics.reset()
         facts = emptyList()          // 不清的话第二次剪会接在第一次的清单后面
         // 记住这个任务，用户放弃时才能真的取消 —— 不取消的话它会在后台
         // 接着跑完两分钟的分析，白白吃电和内存。
@@ -170,6 +176,8 @@ private fun App() {
                 }
             } catch (e: Throwable) {
                 error = e.message ?: e.toString()
+                lastError = e
+                Diagnostics.autoSend(ctx, e)
                 retryable = e is ModelStore.Interrupted
                 step = Step.Theme
             } finally {
@@ -307,10 +315,24 @@ private fun App() {
                         // 下载中断是**最常见的失败**（301 MB，中途断一次很正常），
                         // 而且它是可重试的 —— 让用户重走一遍选视频选主题不合理。
                         // 其他错误（不是乒乓球、空间不够）重试没有意义，不给按钮。
-                        if (retryable && uri != null) {
-                            TextButton({ error = null; start() },
-                                contentPadding = PaddingValues(0.dp)) {
-                                Text("重试下载", fontWeight = FontWeight.SemiBold,
+                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            if (retryable && uri != null) {
+                                TextButton({ error = null; start() },
+                                    contentPadding = PaddingValues(0.dp)) {
+                                    Text("重试下载", fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onErrorContainer)
+                                }
+                            }
+                            // **每个错误都给。** 出问题时我们唯一能拿到的东西
+                            // 就是用户愿意发过来的这段文字 —— 一台华为机器卡在
+                            // 「拼接成片」，而我们什么都拿不到，只能问「再试一次？」
+                            TextButton({
+                                val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                                cm?.setPrimaryClip(android.content.ClipData.newPlainText(
+                                    "Pipo 诊断", Diagnostics.report(ctx, lastError)))
+                                scope.launch { snackbar.showSnackbar("已复制，发给开发者即可") }
+                            }, contentPadding = PaddingValues(0.dp)) {
+                                Text("复制诊断信息",
                                     color = MaterialTheme.colorScheme.onErrorContainer)
                             }
                         }
@@ -346,7 +368,12 @@ private fun App() {
                     needsDownload = ModelStore.needsNetwork(ctx),
                 )
 
-                Step.Cut -> CutStep(stage, dl, facts)
+                Step.Cut -> CutStep(stage, dl, facts, onCopyDiag = {
+                    val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                    cm?.setPrimaryClip(android.content.ClipData.newPlainText(
+                        "Pipo 诊断", Diagnostics.report(ctx, null)))
+                    scope.launch { snackbar.showSnackbar("已复制，发给开发者即可") }
+                })
 
                 Step.Edit -> EditStep(
                     modifier = Modifier.weight(1f),
@@ -460,7 +487,24 @@ private fun ThemeStep(
 }
 
 @Composable
-private fun CutStep(stage: Pipeline.Stage?, dl: ModelStore.Progress?, facts: List<String>) {
+private fun CutStep(stage: Pipeline.Stage?, dl: ModelStore.Progress?, facts: List<String>,
+                    onCopyDiag: () -> Unit) {
+    // 已耗时。**卡住时用户最需要知道的是「这正常吗」** ——
+    // 进度条不动加上没有任何时间信息，看着就像死机，而实际上
+    // Transformer 在转码时本来就可能长时间不更新进度。
+    var elapsed by remember { mutableStateOf(0) }
+    val ctx0 = androidx.compose.ui.platform.LocalContext.current
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(1000)
+            elapsed++
+            // **卡住时也要传。** 那台华为就是卡在「拼接成片」，
+            // 从来没抛异常，所以走不到错误分支 —— 只等异常的话
+            // 最需要现场的那一类失败恰好一份都收不到。
+            // 三分钟发一次，最多两次，够定位又不会变成心跳。
+            if (elapsed == 180 || elapsed == 480) Diagnostics.autoSend(ctx0, null)
+        }
+    }
     Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Text("正在剪辑", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
 
@@ -506,8 +550,27 @@ private fun CutStep(stage: Pipeline.Stage?, dl: ModelStore.Progress?, facts: Lis
             }
         }
 
-        Text("全程在这台手机上完成，录像不会上传。",
+        Text("已用 %d:%02d · 全程在这台手机上完成，录像不会上传。"
+                .format(elapsed / 60, elapsed % 60),
             fontSize = 12.sp, color = MaterialTheme.colorScheme.outline)
+
+        // 三分钟还没完就说句话。45 秒素材实测两分钟左右，超过这个
+        // 多半是这台机器的编解码器有问题 —— 而那正是诊断信息能回答的。
+        if (elapsed > 180) {
+            Card(colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                Column(Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("比预期久了一些。素材越长越慢，但如果进度很久不动，"
+                        + "可能是这台手机的编解码器和我们的组合有问题。",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TextButton(onCopyDiag, contentPadding = PaddingValues(0.dp)) {
+                        Text("复制诊断信息发给开发者", fontSize = 12.sp)
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -45,6 +45,37 @@ export default {
       return json({ error: "只接受 POST" }, 405, cors);
     }
 
+    // /diag —— 诊断信息。和反馈走同一套限频和存储，不另起服务。
+    //
+    // **和反馈是两种东西，别混。** 反馈是用户主动贡献的声学向量，
+    // 用来改进模型；诊断是「我这台机器上坏了」，用来定位 bug。
+    // 前者要的是量，后者要的是能看懂的现场 —— 所以诊断存纯文本，
+    // 而且**故意不做任何解析**：这台机器上有什么编码器、卡在哪一步，
+    // 是人去读的，不是拿来统计的。
+    if (new URL(request.url).pathname.endsWith("/diag")) {
+      const text = await request.text();
+      // 诊断报告实测 400-900 字节。给 32KB 上限挡住明显的滥用，
+      // 同时容得下将来加更多字段。
+      if (!text || text.length > 32768) {
+        return json({ error: "空或过大" }, 400, cors);
+      }
+      // 客户端不带安装编号也允许 —— 诊断的价值在内容本身，
+      // 为了统计去要一个标识符不值得。
+      const id = (request.headers.get("X-Pipo-Install") || "anon").slice(0, 64)
+        .replace(/[^0-9a-zA-Z_-]/g, "");
+      const ip2 = request.headers.get("CF-Connecting-IP") || "0.0.0.0";
+      const day2 = new Date().toISOString().slice(0, 10);
+      const rk = `diag:${day2}:${await sha256hex(ip2 + "|" + day2)}`;
+      const seen2 = Number((await env.PIPO_RATE.get(rk)) || 0);
+      if (seen2 >= 20) return json({ error: "今天上传得有点多了" }, 429, cors);
+      const stamp2 = new Date().toISOString().replace(/[:.]/g, "-");
+      await env.PIPO_FEEDBACK.put(`diag/${day2}/${id}/${stamp2}.txt`, text, {
+        httpMetadata: { contentType: "text/plain; charset=utf-8" },
+      });
+      await env.PIPO_RATE.put(rk, String(seen2 + 1), { expirationTtl: 90000 });
+      return json({ ok: true }, 200, cors);
+    }
+
     const schema = request.headers.get("X-Pipo-Schema");
     if (schema !== SCHEMA) {
       // 明确告诉客户端是版本问题，而不是笼统的 400 ——

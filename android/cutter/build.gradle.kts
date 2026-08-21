@@ -54,6 +54,9 @@ dependencies {
     // 后者改掉 28% 的选段而优劣未验证（见 README）。
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
 
+    // pickCanvas 是纯算术，不碰 Android API —— 放 JVM 单元测试里跑，
+    // 不用开模拟器。仪器测试留给真的需要设备的那些。
+    testImplementation(kotlin("test"))
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("junit:junit:4.13.2")

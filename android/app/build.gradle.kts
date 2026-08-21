@@ -60,7 +60,22 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    // buildConfig：诊断信息里要报版本号和构建类型，
+    // AGP 8 起默认关闭，得显式打开
+    buildFeatures { compose = true; buildConfig = true }
+
+    // 出错时自动把诊断信息传回来。**只给自己人测试的包用。**
+    //
+    //   ./gradlew assembleRelease -PpipoAutoDiag
+    //
+    // 做成开关而不是常开：正式版必须先问过用户才能传任何东西
+    // （PIPL、各家商店的要求，而且界面上写着「全程在这台手机上完成」）。
+    // 默认 false 意味着**忘了加这个参数的包不会偷偷上传** ——
+    // 反过来（默认开、发版记得关）迟早会有一次忘记。
+    defaultConfig {
+        buildConfigField("boolean", "AUTO_DIAG",
+            if (project.hasProperty("pipoAutoDiag")) "true" else "false")
+    }
     sourceSets {
         getByName("main") {
             kotlin.srcDir("src/main/kotlin")
