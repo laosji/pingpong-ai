@@ -303,7 +303,26 @@ def cmd_train(args):
             # **软目标上的 BCE，不是 MSE。** 教师给的是概率，
             # BCE 在 logit 空间的梯度对两端（接近 0 / 接近 1）更敏感，
             # 而这两端恰好是我们最在乎的：门禁看均值、重排看排序。
-            loss = torch.nn.functional.binary_cross_entropy_with_logits(m(x), y)
+            z = m(x)
+            # BCE 管**标定**（门禁看全片均值，需要绝对概率对），
+            # 成对排序管**序**（重排只按序取前 60%，绝对值无关）。
+            # 只用 BCE 的版本实测：门禁转移得几乎完美（0.392 vs 教师 0.397），
+            # 但出片 IoU 只有 0.69，而且排除了噪声和容量两个原因 ——
+            # 说明错的是「同一段视频内部的精细排序」，那正是 BCE 不直接优化的。
+            loss = torch.nn.functional.binary_cross_entropy_with_logits(z, y)
+            if args.rankw > 0:
+                # 批内随机配对。教师给的目标差得足够开的那些对才计入 ——
+                # 目标几乎相同的两个窗，谁前谁后本来就无所谓，
+                # 强行给它们定序只会往梯度里灌噪声。
+                perm = torch.randperm(z.size(0), device=z.device)
+                dy = y - y[perm]
+                mask = dy.abs() > 0.15
+                if mask.any():
+                    sign = torch.sign(dy[mask])
+                    dz = z[mask] - z[perm][mask]
+                    # margin ranking：教师认为 a 比 b 高，学生也该让 a 比 b 高
+                    rank = torch.nn.functional.relu(0.5 - sign * dz).mean()
+                    loss = loss + args.rankw * rank
             loss.backward()
             opt.step(); sched.step()
             run += loss.item() * len(x)
@@ -475,6 +494,7 @@ def main():
     t.add_argument("--workers", type=int, default=4)
     t.add_argument("--width", type=float, default=1.0)
     t.add_argument("--out", default="student.pt")
+    t.add_argument("--rankw", type=float, default=0.0)
     t.set_defaults(fn=cmd_train)
     e = sub.add_parser("export")
     e.add_argument("--width", type=float, default=1.0)
