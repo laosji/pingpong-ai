@@ -3,7 +3,6 @@ package cc.pipo.app
 import android.content.Context
 import java.io.File
 import java.security.MessageDigest
-import java.util.zip.GZIPInputStream
 import javax.net.ssl.HttpsURLConnection
 import java.net.URL
 
@@ -25,10 +24,12 @@ import java.net.URL
  */
 object ModelStore {
 
+    // **注意这里要的是原始 cnn14.onnx，不是 .gz** —— 续传要求文件可按字节
+    // 定位，而 gzip 流不能从中间接上。见 download 的说明。
     private const val BASE = "https://pub-a7dae8fcbe6a4b418f443b1528d3114e.r2.dev/v1"
-    private const val REMOTE = "cnn14.onnx.gz"
     private const val LOCAL = "cnn14.onnx"
-    const val DOWNLOAD_BYTES = 301_692_277L
+    /** 下载体积 = 原始模型体积（不再下 .gz，见 download 的说明）。 */
+    const val DOWNLOAD_BYTES = 323_011_186L
     private const val FINAL_BYTES = 323_011_186L
     private const val SHA = "22b41aef1908df6612fb9cf18640519d5b1398b7c79d3d46b0f5856470b1e3e0"
 
@@ -39,10 +40,20 @@ object ModelStore {
         return f.exists() && f.length() >= FINAL_BYTES * 0.99
     }
 
-    /** 清掉上次中断留下的半截文件。启动时跑一次。 */
+    /**
+     * 清掉没法复用的半截文件。启动时跑一次。
+     *
+     * **只删 `.un_`，不删 `.dl_`。** 前者是从安装包展开到一半的残留，
+     * 重来一次只要几秒，留着没意义；后者是**下载的断点**，删了用户就得
+     * 重下 323 MB。这个函数原来两个都删 —— 那是为「半截文件是垃圾」的
+     * 旧实现写的，加了续传之后半截文件变成了资产，再删就是帮倒忙。
+     *
+     * `.dl_` 的安全性由别处保证：续传前查体积不超过总长，
+     * 拼完整段校验 sha256，不过就地删掉重来。
+     */
     fun cleanup(ctx: Context) {
         File(ctx.filesDir, "models").listFiles()
-            ?.filter { it.name.startsWith(".dl_") || it.name.startsWith(".un_") }
+            ?.filter { it.name.startsWith(".un_") }
             ?.forEach { it.delete() }
     }
 
@@ -61,7 +72,7 @@ object ModelStore {
      */
     class Interrupted(doneBytes: Long) : Exception(
         "下载中断了（已下 ${doneBytes / 1_000_000} / ${DOWNLOAD_BYTES / 1_000_000} MB）。" +
-            "连上 WiFi 后重试 —— 会从头下，所以别用流量。")
+            "重试会从断点继续，不用重下。")
 
     class NotEnoughSpace(val needMb: Long, val freeMb: Long) : Exception(
         "存储空间不够：解压后的模型要 ${needMb} MB，这台设备只剩 ${freeMb} MB。" +
@@ -161,70 +172,88 @@ object ModelStore {
     /** 需要联网吗。界面靠它决定要不要提示「第一次要下 301 MB」。 */
     fun needsNetwork(ctx: Context): Boolean = !ready(ctx) && !bundled(ctx)
 
+    /**
+     * 下载模型。**支持断点续传。**
+     *
+     * 为什么下原始文件而不是 .gz
+     * --------------------------
+     * 原来下 .gz 边下边解压，磁盘峰值只有 323 MB（而不是 302+323=625），
+     * 代价是**半截文件是解压后的内容，没法续传** —— 断在 99% 也要从头再下
+     * 301 MB。实测就撞到过：r2.dev 在 210/301 MB 处卡死，用户白等两分钟。
+     *
+     * 改成下原始文件：多花 7%（308 vs 288 MB），换来的是
+     *   * 断了能从断点续 —— 这是最常见的失败，301 MB 的下载断一次很正常
+     *   * 峰值磁盘不变，还是 323 MB
+     *   * 代码里一行 gzip 都不用
+     *
+     * 服务端不支持 Range 时自动退回从头下，不会更差。
+     */
     fun download(ctx: Context, onProgress: (Progress) -> Unit) {
-        // 包里带了就直接解压，一个字节都不用联网
+        // 包里带了就直接展开，一个字节都不用联网
         if (bundled(ctx)) return unpack(ctx, onProgress)
         checkSpace(ctx)
         val dir = File(ctx.filesDir, "models").apply { mkdirs() }
-        var done = 0L
         val part = File(dir, ".dl_cnn14.part")
-        val outMd = MessageDigest.getInstance("SHA-256")
+
+        // 上次断在哪。**必须校验整段而不是只校验新下的部分** ——
+        // 续传拼出来的文件要么整体对，要么整体不对，分段算摘要没有意义。
+        var have = if (part.exists()) part.length() else 0L
+        if (have > FINAL_BYTES) { part.delete(); have = 0L }
+
         try {
-            (URL("$BASE/$REMOTE").openConnection() as HttpsURLConnection).apply {
+            var done = have
+            (URL("$BASE/$LOCAL").openConnection() as HttpsURLConnection).apply {
                 connectTimeout = 30_000
                 readTimeout = 60_000
                 setRequestProperty("User-Agent", "Pipo-Android")
+                if (have > 0) setRequestProperty("Range", "bytes=$have-")
             }.use { conn ->
-                val total = conn.contentLengthLong.takeIf { it > 0 } ?: DOWNLOAD_BYTES
-                // 提到外层：catch 里要用它告诉用户下到哪了
-                done = 0L
-                // 计数包在网络流上，进度按**压缩字节**算 —— 那才是用户在等的东西。
-                // 注意 GZIPInputStream 走的是数组版 read，单字节版基本不会被调到。
-                val counting = object : java.io.FilterInputStream(conn.inputStream) {
-                    override fun read(b: ByteArray, off: Int, len: Int): Int {
-                        val n = super.read(b, off, len)
-                        if (n > 0) {
-                            done += n
-                            onProgress(Progress.Downloading(done, total))
-                        }
-                        return n
-                    }
-                }
-                GZIPInputStream(counting, 1 shl 16).use { gz ->
-                    part.outputStream().buffered(1 shl 20).use { out ->
+                // 206 = 服务端接受了续传；200 = 不支持，从头给
+                val resuming = conn.responseCode == 206
+                if (!resuming && have > 0) { part.delete(); done = 0L }
+                conn.inputStream.use { src ->
+                    java.io.FileOutputStream(part, resuming).buffered(1 shl 20).use { out ->
                         val buf = ByteArray(1 shl 20)
                         while (true) {
-                            val n = gz.read(buf)
+                            val n = src.read(buf)
                             if (n < 0) break
                             out.write(buf, 0, n)
-                            outMd.update(buf, 0, n)
+                            done += n
+                            onProgress(Progress.Downloading(done, FINAL_BYTES))
                         }
                     }
                 }
             }
             onProgress(Progress.Finishing)
-            check(outMd.digest().hex() == SHA) {
-                "模型校验不通过 —— 多半是没下全或下到了错的东西，重试一次"
+            // 摘要在这里整段算一次。续传意味着数据来自两次连接，
+            // 边下边算的摘要跨不了连接。
+            val md = MessageDigest.getInstance("SHA-256")
+            part.inputStream().buffered(1 shl 20).use { i ->
+                val buf = ByteArray(1 shl 20)
+                while (true) {
+                    val n = i.read(buf)
+                    if (n < 0) break
+                    md.update(buf, 0, n)
+                }
             }
-            check(part.length() >= FINAL_BYTES * 0.99) { "解压出来的大小不对" }
+            check(md.digest().hex() == SHA) {
+                // 校验不过说明拼出来的东西是坏的，留着只会让下次续传继续错
+                part.delete()
+                "模型校验不通过 —— 已清掉重下"
+            }
             check(part.renameTo(file(ctx))) { "无法写入模型文件" }
         } catch (e: Throwable) {
-            part.delete()
-            // 下载途中也可能被别的应用把空间吃掉。把系统的 ENOSPC 换成
-            // 用户能照着做的话 —— 原文「write failed: ENOSPC」谁也不知道该干嘛。
-            if (e.message?.contains("ENOSPC") == true || e is java.io.IOException &&
-                e.message?.contains("No space") == true) {
+            // **不删半截文件** —— 那正是下次续传的起点。
+            // 只有校验失败才删（在上面），因为那时候文件本身是坏的。
+            if (e.message?.contains("ENOSPC") == true) {
+                part.delete()
                 val free = File(ctx.filesDir.absolutePath).usableSpace / 1_000_000
                 throw NotEnoughSpace(FINAL_BYTES / 1_000_000, free)
             }
-            // 网络中断。**这条一定要翻译** —— 实测 release 包在 210/301 MB
-            // 处卡住后抛出来的消息就是一个单词「timeout」，界面上原样显示，
-            // 用户既不知道是什么超时、也不知道该干什么。
-            // 而且这是最常见的失败：301 MB 的下载，中途断一次很正常。
             if (e is java.net.SocketTimeoutException || e is java.net.UnknownHostException ||
                 e is java.net.ConnectException || e is javax.net.ssl.SSLException ||
                 (e is java.io.IOException && e !is java.io.FileNotFoundException)) {
-                throw Interrupted(done)
+                throw Interrupted(if (part.exists()) part.length() else 0L)
             }
             throw e
         }
