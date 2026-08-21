@@ -48,8 +48,24 @@ object ModelStore {
 
     sealed interface Progress {
         data class Downloading(val done: Long, val total: Long) : Progress
+        /** 从安装包里展开。**和下载分开** —— 打包版根本没联网，
+         *  界面上写「下载声学模型」是骗人的。 */
+        data class Unpacking(val done: Long, val total: Long) : Progress
         data object Finishing : Progress
     }
+
+    /**
+     * 下载被网络打断。**必须有自己的类型** —— 系统抛出来的消息是一个单词
+     * 「timeout」，原样显示给用户等于没说。而 301 MB 的下载中途断一次
+     * 太常见了，这是最需要说人话的一条。
+     */
+    class Interrupted(doneBytes: Long) : Exception(
+        "下载中断了（已下 ${doneBytes / 1_000_000} / ${DOWNLOAD_BYTES / 1_000_000} MB）。" +
+            "连上 WiFi 后重试 —— 会从头下，所以别用流量。")
+
+    class NotEnoughSpace(val needMb: Long, val freeMb: Long) : Exception(
+        "存储空间不够：解压后的模型要 ${needMb} MB，这台设备只剩 ${freeMb} MB。" +
+            "清理一些空间再试 —— 模型只下这一次，之后不再占额外空间。")
 
     /**
      * 下载 → **边下边解压** → 两个摘要同时算 → 原子改名。**同步**，调用方放到后台。
@@ -71,10 +87,6 @@ object ModelStore {
      * 而且它本来就是多余的：解压后的摘要已经涵盖了它。下载截断 → gzip
      * 直接抛异常或输出对不上；下载损坏 → CRC 校验失败或输出对不上。
      */
-    class NotEnoughSpace(val needMb: Long, val freeMb: Long) : Exception(
-        "存储空间不够：解压后的模型要 ${needMb} MB，这台设备只剩 ${freeMb} MB。" +
-            "清理一些空间再试 —— 模型只下这一次，之后不再占额外空间。")
-
     /**
      * 先查空间再下载。**不查的话会下满 300 MB 才在写盘时炸 ENOSPC** ——
      * 实测就是这样：用户等了两分钟，最后看到一句系统原文的
@@ -88,9 +100,73 @@ object ModelStore {
         if (free < need) throw NotEnoughSpace(need / 1_000_000, free / 1_000_000)
     }
 
-    fun download(ctx: Context, onProgress: (Progress) -> Unit) {
+    /**
+     * 安装包里带没带模型。带了就不用下载。
+     *
+     * 用 `-PpipoBundleModel` 构建的版本会把原始模型放进 assets，
+     * APK 自己的 deflate 压到 288 MB，成包 308 MB。
+     * 那种包**上不了商店**（APK 上限 100 MB、AAB 基础模块 150 MB），
+     * 只用于直接发给某个人试用。商店版没有这个 asset，走下载。
+     */
+    private fun bundled(ctx: Context): Boolean =
+        runCatching { ctx.assets.open(LOCAL).close(); true }.getOrDefault(false)
+
+    /**
+     * 把打包进来的模型展开到 filesDir。
+     *
+     * 为什么要复制一份而不是直接从 assets 读：ONNX Runtime 要一个真实的
+     * 文件路径才能 mmap 权重。从 assets 读只能整个读进内存，
+     * 323 MB 进堆，中端机会被系统直接杀掉。
+     *
+     * **仍然校验 sha256。** 它就在自己的安装包里，看着不可能坏 ——
+     * 但解压到一半没空间、或者写盘时被系统杀掉，都会留下一个能存下来
+     * 却用不了的文件，而 ONNX 要到加载时才报错，报的还是格式错误。
+     * 校验一次几秒钟，换的是「出问题时知道是出了什么问题」。
+     */
+    private fun unpack(ctx: Context, onProgress: (Progress) -> Unit) {
         checkSpace(ctx)
         val dir = File(ctx.filesDir, "models").apply { mkdirs() }
+        val part = File(dir, ".un_cnn14.part")
+        val md = MessageDigest.getInstance("SHA-256")
+        try {
+            var done = 0L
+            // assets 里放的是**原始模型**（见 build.gradle 的说明），
+            // APK 的 deflate 由 AssetManager 透明解开，这里不需要 gzip。
+            ctx.assets.open(LOCAL).use { src ->
+                part.outputStream().buffered(1 shl 20).use { out ->
+                    val buf = ByteArray(1 shl 20)
+                    while (true) {
+                        val n = src.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        md.update(buf, 0, n)
+                        done += n
+                        onProgress(Progress.Unpacking(done, FINAL_BYTES))
+                    }
+                }
+            }
+            onProgress(Progress.Finishing)
+            check(md.digest().hex() == SHA) { "随包模型校验不通过 —— 安装包可能不完整" }
+            check(part.renameTo(file(ctx))) { "无法写入模型文件" }
+        } catch (e: Throwable) {
+            part.delete()
+            if (e.message?.contains("ENOSPC") == true) {
+                val free = File(ctx.filesDir.absolutePath).usableSpace / 1_000_000
+                throw NotEnoughSpace(FINAL_BYTES / 1_000_000, free)
+            }
+            throw e
+        }
+    }
+
+    /** 需要联网吗。界面靠它决定要不要提示「第一次要下 301 MB」。 */
+    fun needsNetwork(ctx: Context): Boolean = !ready(ctx) && !bundled(ctx)
+
+    fun download(ctx: Context, onProgress: (Progress) -> Unit) {
+        // 包里带了就直接解压，一个字节都不用联网
+        if (bundled(ctx)) return unpack(ctx, onProgress)
+        checkSpace(ctx)
+        val dir = File(ctx.filesDir, "models").apply { mkdirs() }
+        var done = 0L
         val part = File(dir, ".dl_cnn14.part")
         val outMd = MessageDigest.getInstance("SHA-256")
         try {
@@ -100,7 +176,8 @@ object ModelStore {
                 setRequestProperty("User-Agent", "Pipo-Android")
             }.use { conn ->
                 val total = conn.contentLengthLong.takeIf { it > 0 } ?: DOWNLOAD_BYTES
-                var done = 0L
+                // 提到外层：catch 里要用它告诉用户下到哪了
+                done = 0L
                 // 计数包在网络流上，进度按**压缩字节**算 —— 那才是用户在等的东西。
                 // 注意 GZIPInputStream 走的是数组版 read，单字节版基本不会被调到。
                 val counting = object : java.io.FilterInputStream(conn.inputStream) {
@@ -139,6 +216,15 @@ object ModelStore {
                 e.message?.contains("No space") == true) {
                 val free = File(ctx.filesDir.absolutePath).usableSpace / 1_000_000
                 throw NotEnoughSpace(FINAL_BYTES / 1_000_000, free)
+            }
+            // 网络中断。**这条一定要翻译** —— 实测 release 包在 210/301 MB
+            // 处卡住后抛出来的消息就是一个单词「timeout」，界面上原样显示，
+            // 用户既不知道是什么超时、也不知道该干什么。
+            // 而且这是最常见的失败：301 MB 的下载，中途断一次很正常。
+            if (e is java.net.SocketTimeoutException || e is java.net.UnknownHostException ||
+                e is java.net.ConnectException || e is javax.net.ssl.SSLException ||
+                (e is java.io.IOException && e !is java.io.FileNotFoundException)) {
+                throw Interrupted(done)
             }
             throw e
         }

@@ -67,6 +67,31 @@ android {
             assets.srcDir("src/main/assets")
         }
     }
+    // 把声学模型打进安装包。**只用于直接分发，不能上商店** ——
+    // 模型压完 288 MB，加上本体是 307 MB，而 APK 上限 100 MB、
+    // AAB 基础模块 150 MB，都过不去。商店版仍然走按需下载。
+    //
+    //   ./gradlew assembleRelease -PpipoBundleModel
+    //
+    // 生成的 assets 文件不进版本库（见 .gitignore）。
+    if (project.hasProperty("pipoBundleModel")) {
+        val src = rootProject.file("../models/cnn14.onnx")
+        require(src.exists()) { "要打包模型得先有 models/cnn14.onnx" }
+        // **放原始文件，不要放 .gz。** 试过放 gz：AGP 会把它解开、
+        // 去掉后缀，APK 里的条目变成 assets/cnn14.onnx，
+        // 而代码去找 cnn14.onnx.gz 找不到，静默回落到下载 —— 打包等于白做。
+        // 直接放原始文件反而更简单：zip 自己的 deflate 压到同样的 288 MB，
+        // 读的时候 AssetManager 透明解压，代码里一行 gzip 都不用写。
+        val stagedDir = layout.buildDirectory.dir("bundled-assets")
+        val stage = tasks.register<Copy>("stageBundledModel") {
+            from(src); into(stagedDir)
+        }
+        // **必须挂给所有读这个目录的任务**，不能只挂 mergeAssets ——
+        // lintVitalAnalyzeRelease 也会读它，漏了 Gradle 会直接报
+        // 「uses this output without declaring an explicit dependency」。
+        sourceSets.getByName("main").assets.srcDir(stage)
+    }
+
     packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
 }
 

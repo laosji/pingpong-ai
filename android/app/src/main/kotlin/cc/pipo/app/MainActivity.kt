@@ -125,6 +125,9 @@ private fun App() {
 
     var job by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     var confirmAbort by remember { mutableStateOf(false) }
+    // 这次的错误值不值得给「重试」按钮。只有网络中断算 ——
+    // 「不是乒乓球」「空间不够」重试一百次也是同一个结果。
+    var retryable by remember { mutableStateOf(false) }
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
@@ -142,6 +145,7 @@ private fun App() {
         step = Step.Cut
         error = null
         removed = emptySet(); applied = emptySet(); saved = false
+        retryable = false
         facts = emptyList()          // 不清的话第二次剪会接在第一次的清单后面
         // 记住这个任务，用户放弃时才能真的取消 —— 不取消的话它会在后台
         // 接着跑完两分钟的分析，白白吃电和内存。
@@ -166,6 +170,7 @@ private fun App() {
                 }
             } catch (e: Throwable) {
                 error = e.message ?: e.toString()
+                retryable = e is ModelStore.Interrupted
                 step = Step.Theme
             } finally {
                 stage = null; dl = null
@@ -295,8 +300,21 @@ private fun App() {
             error?.let {
                 Card(colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.errorContainer)) {
-                    Text(it, Modifier.padding(14.dp), fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onErrorContainer)
+                    Column(Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(it, fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onErrorContainer)
+                        // 下载中断是**最常见的失败**（301 MB，中途断一次很正常），
+                        // 而且它是可重试的 —— 让用户重走一遍选视频选主题不合理。
+                        // 其他错误（不是乒乓球、空间不够）重试没有意义，不给按钮。
+                        if (retryable && uri != null) {
+                            TextButton({ error = null; start() },
+                                contentPadding = PaddingValues(0.dp)) {
+                                Text("重试下载", fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onErrorContainer)
+                            }
+                        }
+                    }
                 }
             }
             if (confirmAbort) {
@@ -324,7 +342,8 @@ private fun App() {
                     durationS = durationS, selected = theme, onSelect = { theme = it },
                     onBack = { step = Step.Pick; uri = null },
                     onStart = ::start,
-                    needsDownload = !ModelStore.ready(ctx),
+                    // 包里带了模型就不该提示「要下 301 MB」
+                    needsDownload = ModelStore.needsNetwork(ctx),
                 )
 
                 Step.Cut -> CutStep(stage, dl, facts)
@@ -448,6 +467,9 @@ private fun CutStep(stage: Pipeline.Stage?, dl: ModelStore.Progress?, facts: Lis
         val (label, pct) = when {
             dl is ModelStore.Progress.Downloading ->
                 "下载声学模型 %d / %d MB".format(dl.done / 1_000_000, dl.total / 1_000_000) to
+                    (100f * dl.done / dl.total.coerceAtLeast(1)).toInt()
+            dl is ModelStore.Progress.Unpacking ->
+                "准备声学模型 %d / %d MB".format(dl.done / 1_000_000, dl.total / 1_000_000) to
                     (100f * dl.done / dl.total.coerceAtLeast(1)).toInt()
             dl is ModelStore.Progress.Finishing -> "校验模型" to -1
             stage is Pipeline.Stage.Decoding -> "读取音轨" to -1
