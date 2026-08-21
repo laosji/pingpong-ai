@@ -137,6 +137,16 @@ object Cutter {
         canvas: Canvas,
         timeoutMs: Long = -1,          // 负数 = 按成片长度自动算，见 deadlineFor
         onProgress: ((Int) -> Unit)? = null,
+        /**
+         * 返回 true 表示调用方要求停下。
+         *
+         * **必须由调用方提供，Cutter 自己看不到协程状态。** 等待用的是
+         * `lock.wait(250)`，那是阻塞等待，不响应协程取消 —— 用户点了
+         * 「放弃」，job.cancel() 只标记协程取消，而这里会**继续等到超时或
+         * 完成**（最长 10 分钟），Transformer 照样在编码、照样耗电，
+         * HandlerThread 也一直活着。「放弃」于是变成一句空话。
+         */
+        shouldStop: (() -> Boolean)? = null,
     ): Outcome {
         if (segments.isEmpty()) return Outcome.Failed("没有要剪的片段", null)
         val budget = if (timeoutMs > 0) timeoutMs else deadlineFor(segments)
@@ -213,9 +223,11 @@ object Cutter {
 
         val deadline = System.currentTimeMillis() + budget
         val holder = ProgressHolder()
+        var stopped = false
         synchronized(lock) {
             while (result == null && System.currentTimeMillis() < deadline) {
                 lock.wait(250)
+                if (shouldStop?.invoke() == true) { stopped = true; break }
                 if (onProgress != null) {
                     val t = transformer
                     if (t != null) handler.post {
@@ -228,11 +240,14 @@ object Cutter {
         }
         val r = result
         if (r == null) {
-            // 超时也要停掉，否则那条线程会继续占着编码器
+            // 超时或被放弃都要停掉，否则编码器一直被占着
             val t = transformer
             if (t != null) handler.post { runCatching { t.cancel() } }
+            // 半截的成片留着没意义，而且会被当成「上次的输出」占空间
+            runCatching { if (out.exists()) out.delete() }
         }
         handler.post { worker.quitSafely() }
-        return r ?: Outcome.Failed("超时：超过 ${budget / 1000} 秒仍未完成", null)
+        return r ?: if (stopped) Outcome.Failed("已取消", null)
+                    else Outcome.Failed("超时：超过 ${budget / 1000} 秒仍未完成", null)
     }
 }

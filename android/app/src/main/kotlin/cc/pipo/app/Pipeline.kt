@@ -102,6 +102,9 @@ object Pipeline {
         onStage: (Stage) -> Unit,
     ): Result = cut(ctx, uri, analyze(ctx, uri, themeId, top, onStage), onStage)
 
+    /** 被用户放弃。和真正的失败分开 —— 界面不该把它当成错误弹出来。 */
+    class Cancelled : Exception("已取消")
+
     /**
      * 分析：解码 → 检测 → 重排 → 按主题挑段。**同步**，调用方放到后台线程。
      *
@@ -186,6 +189,8 @@ object Pipeline {
      */
     fun cut(
         ctx: Context, uri: Uri, clips: List<Clip>, onStage: (Stage) -> Unit,
+        /** 见 Cutter.cut 的说明：阻塞等待看不到协程取消，得由调用方告诉它。 */
+        shouldStop: (() -> Boolean)? = null,
     ): Result {
         require(clips.isNotEmpty()) { "一段都不留就没得剪了。至少留一段。" }
         val size = sizeOf(ctx, uri)
@@ -195,6 +200,7 @@ object Pipeline {
             clips.map { Cutter.Segment(uri, it.start, it.end) },
             out, Cutter.pickCanvas(listOf(size)),
             onProgress = { onStage(Stage.Cutting(it)) },
+            shouldStop = shouldStop,
         )
         return when (res) {
             is Cutter.Outcome.Ok -> {

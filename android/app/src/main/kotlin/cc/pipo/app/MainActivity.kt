@@ -51,6 +51,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.util.UnstableApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -122,6 +124,16 @@ private fun App() {
     var removed by remember { mutableStateOf<Set<Int>>(emptySet()) }
     var applied by remember { mutableStateOf<Set<Int>>(emptySet()) }   // 当前成片对应的删除集
     var recutting by remember { mutableStateOf(false) }
+    /**
+     * 当前成片是不是最新的。
+     *
+     * **判据是「有没有未应用的改动」，不是「正在不正在切」。**
+     * recutting 只在真正开切之后才为 true，而删片段后有 500 毫秒防抖窗口 ——
+     * 那段时间里 recutting 还是 false，保存按钮可点，存进相册的却是
+     * **删除前的旧成片**；等重切完成，clearOutputs 还会把刚才正在存的
+     * 那份删掉。
+     */
+    val stale = removed != applied || recutting
     // 缩略图后填。**不挡着进调整页** —— 抽十几帧要一两秒，
     // 为了它把整页卡住不值得，先出卡片、图后到。
     var thumbs by remember { mutableStateOf<List<android.graphics.Bitmap?>>(emptyList()) }
@@ -133,6 +145,8 @@ private fun App() {
     var retryable by remember { mutableStateOf(false) }
     // 留着异常对象本身，不只是消息 —— 诊断信息里要类型和堆栈
     var lastError by remember { mutableStateOf<Throwable?>(null) }
+    // 保存中。**必须挡住重复点击** —— 点两下会往相册存两份。
+    var saving by remember { mutableStateOf(false) }
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
@@ -167,14 +181,19 @@ private fun App() {
                     }
                     val clips = Pipeline.analyze(ctx, u, theme.id, onStage = ::onStage)
                     allClips = clips
-                    result = Pipeline.cut(ctx, u, clips, ::onStage)
+                    // 把协程的取消状态传进去 —— 阻塞等待自己看不到
+                    result = Pipeline.cut(ctx, u, clips, ::onStage) { !coroutineContext.isActive }
                 }
                 step = Step.Edit
                 // 页面已经出来了，缩略图慢慢补
                 scope.launch(Dispatchers.IO) {
                     thumbs = Pipeline.thumbnails(ctx, u, allClips)
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e          // 用户主动放弃，不是错误，别弹出来
             } catch (e: Throwable) {
+                // 「已取消」是放弃之后 Cutter 的返回值，同样不该当错误显示
+                if (e.message == "已取消") throw kotlinx.coroutines.CancellationException()
                 error = e.message ?: e.toString()
                 lastError = e
                 Diagnostics.autoSend(ctx, e)
@@ -199,7 +218,7 @@ private fun App() {
         try {
             val keep = allClips.filterIndexed { i, _ -> i !in removed }
             val r = withContext(Dispatchers.IO) {
-                Pipeline.cut(ctx, u, keep) { stage = it }
+                Pipeline.cut(ctx, u, keep, { stage = it }) { !coroutineContext.isActive }
             }
             result = r
             applied = removed
@@ -225,9 +244,10 @@ private fun App() {
     fun back() {
         when (step) {
             Step.Theme -> { step = Step.Pick; uri = null; error = null }
-            // 从确认页退回调整页 —— 用户看完最终效果常会想再去掉一段，
-            // 这时候不该逼他从头再剪一次。
-            Step.Done -> { step = Step.Edit; error = null }
+            // **从「存好了」这一页返回就是回首页，不是退回调整页。**
+            // 东西已经在相册里了，退回去会让人以为还没存 ——
+            // 而且退回去再改的话，相册里会留下一份旧的。
+            Step.Done -> home()
             Step.Edit -> home()
             // 剪辑中要问一句。分析要两三分钟，误触返回就全白跑了，
             // 而且系统返回手势从左边缘划，正好是最容易误触的地方。
@@ -242,6 +262,7 @@ private fun App() {
 
     fun save() {
         val r = result ?: return
+        saving = true
         scope.launch {
             try {
                 withContext(Dispatchers.IO) {
@@ -249,10 +270,9 @@ private fun App() {
                         "Pipo_%s_%d.mp4".format(theme.id, System.currentTimeMillis()))
                 }
                 saved = true
-                // **先回首页再弹提示。** showSnackbar 是挂起的，会一直等到
-                // 提示消失才返回 —— 反过来写的话用户在保存页干等四秒才跳转，
-                // 看着像卡住了。提示本身跟着首页一起显示，不影响阅读。
-                home()
+                // 存完进预览页 —— 用户刚做完一件事，应该先看到成果，
+                // 而不是被直接踢回首页。「再剪一个」在那一页上。
+                step = Step.Done
                 snackbar.showSnackbar("已存到相册的 Movies/Pipo")
             } catch (e: Throwable) {
                 // 别把 java.io 的原文甩给用户 —— 实测这里出现过
@@ -264,6 +284,8 @@ private fun App() {
                 } else {
                     "存不进相册：" + (e.message ?: e.javaClass.simpleName)
                 }
+            } finally {
+                saving = false
             }
         }
     }
@@ -287,8 +309,12 @@ private fun App() {
                     // 跟在列表后面的按钮会被推到屏幕外，用户得先滚到底才点得到。
                     actions = {
                         if (step == Step.Edit && result != null) {
-                            TextButton({ step = Step.Done }, enabled = !recutting) {
-                                Text("保存", fontWeight = FontWeight.SemiBold)
+                            // **真的保存，然后进预览页。** 原来这个按钮写着
+                            // 「保存」却只是跳到确认页 —— 标签在骗人，
+                            // 用户以为存好了，其实还得在下一页再点一次。
+                            TextButton({ save() }, enabled = !stale && !saving) {
+                                Text(if (saving) "保存中" else "保存",
+                                    fontWeight = FontWeight.SemiBold)
                             }
                         }
                     },
@@ -299,9 +325,13 @@ private fun App() {
     ) { pad ->
         Column(
             Modifier.padding(pad).fillMaxSize().padding(20.dp)
-                // 调整页不滚动：它要把视频撑满剩余高度，而 verticalScroll
-                // 给子项的是无限高度约束，weight(1f) 在里面算不出来。
-                .then(if (step == Step.Edit) Modifier
+                // **这两页自己管滚动，外层不能再套一层。**
+                // verticalScroll 给子项的是无限高度约束，weight(1f) 在里面
+                // 算出来是 0 —— 实测：给选主题页加了 weight 之后，
+                // 四张主题卡直接消失，只剩底部按钮。
+                //   Edit  要把视频撑满剩余高度
+                //   Theme 要把「开始剪辑」钉在底部（小屏上会被推出屏幕）
+                .then(if (step == Step.Edit || step == Step.Theme) Modifier
                       else Modifier.verticalScroll(rememberScrollState())),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
@@ -386,7 +416,11 @@ private fun App() {
                 )
 
                 Step.Done -> DoneStep(
-                    result = result, onSave = ::save, onHome = ::home)
+                    result = result,
+                    // 「再剪一个」= 回到选素材那一步。和「回首页」现在是
+                    // 同一个动作 —— 但保留两个按钮：措辞决定用户理解成
+                    // 「继续做事」还是「结束」，这两种心情不一样。
+                    onAgain = ::home, onHome = ::home)
             }
         }
     }
@@ -447,42 +481,86 @@ private fun ThemeStep(
     durationS: Double, selected: Pipeline.Theme, onSelect: (Pipeline.Theme) -> Unit,
     onBack: () -> Unit, onStart: () -> Unit, needsDownload: Boolean,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("要剪成什么", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-        Text("素材 %d:%02d".format(durationS.toInt() / 60, durationS.toInt() % 60),
-            fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Pipeline.THEMES.forEach { t ->
-            Card(
-                Modifier.fillMaxWidth().selectable(t == selected) { onSelect(t) },
-                colors = CardDefaults.cardColors(
-                    containerColor = if (t == selected)
-                        MaterialTheme.colorScheme.primaryContainer
-                    else MaterialTheme.colorScheme.surfaceVariant),
-            ) {
-                Column(Modifier.padding(14.dp)) {
-                    // 未选中的标题也用 onSurface —— 之前跟着容器色走成了
-                    // onSurfaceVariant，四个选项里三个都是灰的，看着像被禁用
-                    Text(t.name, fontWeight = FontWeight.Medium,
-                        color = if (t == selected)
-                            MaterialTheme.colorScheme.onPrimaryContainer
-                        else MaterialTheme.colorScheme.onSurface)
-                    Text(t.desc, fontSize = 12.sp,
-                        color = if (t == selected)
-                            MaterialTheme.colorScheme.onPrimaryContainer
-                        else MaterialTheme.colorScheme.onSurfaceVariant)
+    // **主按钮钉在底部，不跟内容滚。**
+    // 720x1280 的屏上四张主题卡加说明就占满了一屏，「开始剪辑」被推到
+    // 屏幕外 —— 用户选完主题看不到下一步该点什么，得先猜到要往下滑。
+    // 主动作永远不该需要滚动才够得着。
+    Column(Modifier.fillMaxSize()) {
+        Column(
+            Modifier.weight(1f).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("要剪成什么", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+            Text("素材 %d:%02d".format(durationS.toInt() / 60, durationS.toInt() % 60),
+                fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Pipeline.THEMES.forEach { t ->
+                Card(
+                    Modifier.fillMaxWidth().selectable(t == selected) { onSelect(t) },
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (t == selected)
+                            MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surfaceVariant),
+                ) {
+                    Column(Modifier.padding(14.dp)) {
+                        // 未选中的标题也用 onSurface —— 之前跟着容器色走成了
+                        // onSurfaceVariant，四个选项里三个都是灰的，看着像被禁用
+                        Text(t.name, fontWeight = FontWeight.Medium,
+                            color = if (t == selected)
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            else MaterialTheme.colorScheme.onSurface)
+                        Text(t.desc, fontSize = 12.sp,
+                            color = if (t == selected)
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
-        }
-        if (needsDownload) {
-            // 提前说，别等用户点了才弹一个 300MB 的下载出来
-            Text("第一次剪辑需要下载约 %d MB 的声学模型，之后离线可用。"
-                    .format(ModelStore.DOWNLOAD_BYTES / 1_000_000),
-                fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (needsDownload) {
+                // 提前说，别等用户点了才弹一个 300MB 的下载出来
+                Text("第一次剪辑需要下载约 %d MB 的声学模型，之后离线可用。"
+                        .format(ModelStore.DOWNLOAD_BYTES / 1_000_000),
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Spacer(Modifier.height(4.dp))
         }
         // 「换一段」删掉了 —— 顶栏左上角的返回做的就是这件事，
         // 同一个动作在一屏里出现两次，用户会以为它们不一样。
-        Button(onStart, Modifier.fillMaxWidth().height(52.dp),
-            colors = pipoButtonColors()) { Text("开始剪辑") }
+        Button(onStart, Modifier.fillMaxWidth().height(54.dp),
+            colors = pipoButtonColors()) {
+            Sparkle(MaterialTheme.colorScheme.surface)
+            Spacer(Modifier.width(8.dp))
+            Text("开始剪辑", fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+/**
+ * 主按钮上的火花。
+ *
+ * 用四角星而不是引一套图标库：`AutoAwesome` 在 material-icons-extended 里，
+ * 为一个 18dp 的形状拖进整包图标不值得，而这个形状是纯几何。
+ *
+ * 两颗大小不同的星 —— 一颗孤零零的容易读成「收藏」，成对才读得出
+ * 「自动生成」那层意思。
+ */
+@Composable
+private fun Sparkle(color: Color) {
+    Canvas(Modifier.size(18.dp)) {
+        fun star(cx: Float, cy: Float, r: Float) {
+            // 四角星：四个方向各拉一个尖，腰部收到 0.34 —— 收得越紧越尖锐
+            val w = r * 0.34f
+            val p = androidx.compose.ui.graphics.Path().apply {
+                moveTo(cx, cy - r)
+                cubicTo(cx + w * 0.4f, cy - w * 0.4f, cx + w * 0.4f, cy - w * 0.4f, cx + r, cy)
+                cubicTo(cx + w * 0.4f, cy + w * 0.4f, cx + w * 0.4f, cy + w * 0.4f, cx, cy + r)
+                cubicTo(cx - w * 0.4f, cy + w * 0.4f, cx - w * 0.4f, cy + w * 0.4f, cx - r, cy)
+                cubicTo(cx - w * 0.4f, cy - w * 0.4f, cx - w * 0.4f, cy - w * 0.4f, cx, cy - r)
+                close()
+            }
+            drawPath(p, color)
+        }
+        star(size.width * 0.42f, size.height * 0.44f, size.minDimension * 0.42f)
+        star(size.width * 0.82f, size.height * 0.80f, size.minDimension * 0.20f)
     }
 }
 
@@ -854,10 +932,12 @@ private fun EditStep(
  */
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
-private fun DoneStep(result: Pipeline.Result?, onSave: () -> Unit, onHome: () -> Unit) {
+private fun DoneStep(result: Pipeline.Result?, onAgain: () -> Unit, onHome: () -> Unit) {
     val player = rememberPlayer(result?.file)
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("就是这段了", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+        Text("存好了", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+        Text("在相册的 Movies/Pipo 里", fontSize = 13.sp,
+            color = MaterialTheme.colorScheme.primary)
         if (result != null) PlayerBox(player)
         result?.let {
             Text("%d 段 · %s · %.1f MB".format(
@@ -865,11 +945,15 @@ private fun DoneStep(result: Pipeline.Result?, onSave: () -> Unit, onHome: () ->
                 fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Spacer(Modifier.height(4.dp))
-        Button(onSave, Modifier.fillMaxWidth().height(52.dp), enabled = result != null,
+        // 「再剪一个」是主动作：刚剪完一段的人最可能想剪下一段，
+        // 而不是关掉应用。
+        Button(onAgain, Modifier.fillMaxWidth().height(52.dp),
             colors = pipoButtonColors()) {
-            Text("保存到相册")
+            Sparkle(MaterialTheme.colorScheme.surface)
+            Spacer(Modifier.width(8.dp))
+            Text("再剪一个", fontWeight = FontWeight.SemiBold)
         }
-        OutlinedButton(onHome, Modifier.fillMaxWidth().height(48.dp)) { Text("返回首页") }
+        OutlinedButton(onHome, Modifier.fillMaxWidth().height(48.dp)) { Text("回首页") }
     }
 }
 
