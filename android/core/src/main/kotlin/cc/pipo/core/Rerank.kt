@@ -54,11 +54,30 @@ object Rerank {
     private const val TEACHER_DIM = 2048
 
     /**
-     * 单次整段处理的时长上限。超过这个就必须分段 —— 32kHz 的 float PCM
-     * 是每秒 128KB，20 分钟就 154MB，再加嵌入和解码缓冲，中端机会被系统杀掉。
-     * 这不是保守估计，是 float 数组的算术。
+     * 单次整段处理的时长上限。
+     *
+     * **这个数原来写死 20 分钟，而且是照着错的量算的。** 当时只算了
+     * 32kHz PCM（每秒 128KB），漏掉了解码阶段 —— 那时候解码是先把整段按
+     * **原始采样率**攒起来再拼成一个大数组，48kHz 单声道每秒 192KB，
+     * 而且要同时拿着两份。12 分钟的真实素材实际峰值 279MB，
+     * 从 20 分钟的守卫底下大摇大摆过去，然后在用户手机上 OOM。
+     *
+     * 解码改成流式之后（见 AudioDecode），峰值就是结果本身。现在按
+     * **这台设备真实的堆上限**算，而不是拍一个所有机器通用的数：
+     * 同样一段素材，512MB 堆的旗舰能剪，128MB 堆的老机器不能，
+     * 写死一个数只能二选一 —— 要么冤枉前者，要么坑死后者。
+     *
+     * 峰值构成（一秒素材）：
+     *   * 32kHz float PCM        128KB   嵌入这一步要整段
+     *   * 嵌入 2 窗 × 2048 × 4    16KB
+     * 合计约 144KB/秒。留一半余量给运行时自己、界面和缩略图。
      */
-    const val MAX_SAFE_SECONDS = 20 * 60
+    fun maxSafeSeconds(maxHeapBytes: Long): Int {
+        val perSecond = 144L * 1024
+        val usable = (maxHeapBytes / 2).coerceAtLeast(32L * 1024 * 1024)
+        // 上限仍然封在 30 分钟：再长的话即使内存够，等待时间也不合理了
+        return (usable / perSecond).toInt().coerceIn(60, 30 * 60)
+    }
 
     class Model(
         internal val env: OrtEnvironment,

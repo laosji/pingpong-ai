@@ -72,6 +72,63 @@ object Diagnostics {
     fun mark(name: String) {
         if (t0 == 0L) reset()
         marks[name] = System.currentTimeMillis() - t0
+        flush()
+    }
+
+    // ── 被杀也要留下记录 ────────────────────────────────────────────────
+    //
+    // **这是唯一一种什么都收不到的失败。** 自动上报挂在 catch 里，
+    // 靠抛异常触发；而进程被系统杀掉时没有异常、没有代码在跑，
+    // 也就没人去传 —— 用户看到进度条不动，我们这边一片空白。
+    // 偏偏这正是最需要查的那种「卡住」：EMUI 杀后台比 AOSP 激进得多。
+    //
+    // 做法是崩溃上报的老套路：**开工时把现场落盘，每打一个点重写一次，
+    // 正常收尾就删掉。** 下次启动时文件还在，就说明上一次没走到收尾 ——
+    // 把它传上来。这样「跑到重排中就没了下文」也变成一条能读的记录。
+    //
+    // 代价可以忽略：一次处理重写六七次，每次几百字节。
+
+    private const val INFLIGHT = "diag_inflight.txt"
+    /** 落盘要 Context，而 mark() 没有。开工时存一份 application context。 */
+    private var appCtx: Context? = null
+
+    private fun inflight(ctx: Context) = File(ctx.filesDir, INFLIGHT)
+
+    /** 开工。之后每个打点都会把现场写进磁盘。 */
+    fun arm(ctx: Context) {
+        appCtx = ctx.applicationContext
+        reset()
+        flush()
+    }
+
+    /** 收工（成功或抛异常都算）。现场删掉，下次启动就不会误报。 */
+    fun disarm() {
+        val ctx = appCtx ?: return
+        runCatching { inflight(ctx).delete() }
+        appCtx = null
+    }
+
+    private fun flush() {
+        val ctx = appCtx ?: return
+        runCatching { inflight(ctx).writeText(report(ctx, null)) }
+    }
+
+    /**
+     * 上次没有正常收尾的现场。启动时跑一次。
+     *
+     * 传完就删 —— **一份只传一次**，否则一次被杀会变成之后每次启动都传，
+     * 既没有新信息又白耗用户的流量。
+     */
+    fun sendLeftover(ctx: Context) {
+        if (!BuildConfig.AUTO_DIAG) return
+        val f = inflight(ctx)
+        if (!f.exists()) return
+        val body = runCatching { f.readText() }.getOrNull()
+        runCatching { f.delete() }
+        if (body.isNullOrBlank()) return
+        // 说清楚这份和普通报错不是一回事：它没有异常，因为根本没抛出来。
+        post(ctx, "上次运行没有正常结束（进程被系统杀掉或崩溃），" +
+            "以下是当时的现场：\n\n" + body)
     }
 
     /**
@@ -162,7 +219,12 @@ object Diagnostics {
      */
     fun autoSend(ctx: Context, err: Throwable?) {
         if (!BuildConfig.AUTO_DIAG) return
-        val body = report(ctx, err)
+        post(ctx, report(ctx, err))
+    }
+
+    /** 真正发送的那一段。[autoSend] 和 [sendLeftover] 共用。 */
+    private fun post(ctx: Context, body: String) {
+        val id = installId(ctx)
         Thread {
             runCatching {
                 (URL(ENDPOINT).openConnection() as HttpsURLConnection).apply {
@@ -171,7 +233,7 @@ object Diagnostics {
                     connectTimeout = 10_000
                     readTimeout = 10_000
                     setRequestProperty("Content-Type", "text/plain; charset=utf-8")
-                    setRequestProperty("X-Pipo-Install", installId(ctx))
+                    setRequestProperty("X-Pipo-Install", id)
                 }.use { c ->
                     c.outputStream.use { it.write(body.toByteArray()) }
                     c.responseCode

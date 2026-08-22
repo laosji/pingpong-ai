@@ -68,6 +68,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ModelStore.cleanup(this)      // 清掉上次中断的半截下载
+        // 上次剪到一半被系统杀掉的现场。**必须在这里传** —— 那种失败
+        // 不抛异常，当时没人有机会上报，只有下次启动能捡回来。
+        Diagnostics.sendLeftover(this)
         setContent { MaterialTheme(colorScheme = PipoDark) { App() } }
     }
 
@@ -196,7 +199,9 @@ private fun App() {
         error = null
         removed = emptySet(); applied = emptySet(); saved = false
         retryable = false
-        Diagnostics.reset()
+        // arm 而不是 reset：从这一刻起每个打点都会落盘，进程被系统杀掉时
+        // 现场还留在磁盘上，下次启动捡回来传。收尾在下面的 finally。
+        Diagnostics.arm(ctx)
         facts = emptyList()          // 不清的话第二次剪会接在第一次的清单后面
         // 记住这个任务，用户放弃时才能真的取消 —— 不取消的话它会在后台
         // 接着跑完两分钟的分析，白白吃电和内存。
@@ -225,13 +230,26 @@ private fun App() {
             } catch (e: Throwable) {
                 // 「已取消」是放弃之后 Cutter 的返回值，同样不该当错误显示
                 if (e.message == "已取消") throw kotlinx.coroutines.CancellationException()
-                error = e.message ?: e.toString()
+                error = when (e) {
+                    // 系统抛的原文是「Failed to allocate a 139739088 byte
+                    // allocation with 25100288 free bytes and 55MB until OOM」——
+                    // 一句英文加一串字节数，用户既看不懂也不知道该做什么。
+                    // 实测就是这么甩到一位用户脸上的。
+                    is OutOfMemoryError ->
+                        "这段录像太长，这台手机的内存放不下。分成几段再剪就行 —— " +
+                            "十分钟以内比较稳。"
+                    else -> e.message ?: e.toString()
+                }
                 lastError = e
                 Diagnostics.autoSend(ctx, e)
                 retryable = e is ModelStore.Interrupted
                 step = Step.Theme
             } finally {
                 stage = null; dl = null
+                // 收工。**成功、报错、用户放弃都算收尾** —— 只有「进程没了」
+                // 才走不到这里，而那正是我们要靠磁盘上那份现场捡回来的情况。
+                // 报错那条上面已经 autoSend 过了，这里删掉避免下次启动重复传。
+                Diagnostics.disarm()
             }
         }
     }

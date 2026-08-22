@@ -149,18 +149,25 @@ object Pipeline {
         require(durationS > 0.0) {
             "读不出这段录像的时长，可能是文件损坏或者格式不支持。换一段试试。"
         }
-        require(durationS <= Rerank.MAX_SAFE_SECONDS) {
-            "这段录像 %.0f 分钟，超过本机一次能处理的 %d 分钟。".format(
-                durationS / 60, Rerank.MAX_SAFE_SECONDS / 60) +
-                "先分段再剪 —— 不是不想支持，是整段解码要占几百 MB 内存，硬跑会被系统杀掉。"
+        // 上限按**这台设备真实的堆**算，不是写死一个数 —— 见 maxSafeSeconds。
+        val maxS = Rerank.maxSafeSeconds(Runtime.getRuntime().maxMemory())
+        require(durationS <= maxS) {
+            "这段录像 %.0f 分钟，超过这台手机一次能处理的 %d 分钟。".format(
+                durationS / 60, maxS / 60) +
+                "先分段再剪 —— 不是不想支持，是整段音频要一直放在内存里，硬跑会被系统杀掉。"
         }
 
         onStage(Stage.Decoding)
-        val pcm16 = AudioDecode.decode(ctx, uri, 16000)
+        // **pcm16 必须在解 pcm32 之前变成垃圾。** 两个都留着的话，
+        // 12 分钟素材就是 46MB + 93MB 同时在堆上，白白多占一份。
+        // 用可空变量并显式置空，不要指望局部变量会被及时回收 ——
+        // 作用域没结束，引用就还在，GC 一个字节都不会放。
+        var pcm16: FloatArray? = AudioDecode.decode(ctx, uri, 16000)
         onStage(Stage.Decoded(durationS))
 
         onStage(Stage.Detecting)
-        val det = Audio.detectHits(pcm16, Audio.Config())
+        val det = Audio.detectHits(pcm16!!, Audio.Config())
+        pcm16 = null
         if (det.hits.isEmpty()) throw NoHits()
         onStage(Stage.Detected(det.hits.size))
 

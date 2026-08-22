@@ -1,13 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- 只用来下那一次声学模型。剪辑本身完全离线。 -->
+    <!--
+      largeHeap：整段音频必须一直在内存里 —— 自适应阈值按 2 秒块统计、
+      跨块要连续，嵌入也要按 1 秒窗扫全片，两个都没法分块。
+      12 分钟 32kHz float 就是 93MB，默认堆（这台模拟器 201MB）算上余量
+      只够 11 分钟，而一位真实用户的素材正好 12 分钟，当场 OOM。
+      largeHeap 通常不推荐，但媒体编辑正是它存在的理由。
+      它**不是免死金牌**：时长上限仍然按实际拿到的堆算，
+      见 Rerank.maxSafeSeconds —— 堆小的机器照样会被提前拦下，
+      只是拦的位置由这台机器自己决定，而不是所有人共用一个写死的数。
+    -->
     <uses-permission android:name="android.permission.INTERNET" />
     <application
         android:label="Pipo"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@style/Theme.Pipo"
-        android:allowBackup="false">
+        android:allowBackup="false"
+        android:largeHeap="true">
         <activity android:name=".MainActivity" android:exported="true"
                   android:configChanges="orientation|screenSize|keyboardHidden">
             <intent-filter>
