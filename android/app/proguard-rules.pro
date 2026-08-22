@@ -15,3 +15,11 @@
 # 只留名字不留成员，混淆强度基本不受影响。
 -keepnames class cc.pipo.app.Pipeline$* extends java.lang.Exception
 -keepnames class cc.pipo.app.ModelStore$* extends java.lang.Exception
+
+# 栈帧要能读。不留这两个属性，release 包传回来的每一帧都是
+# 「s1.a(Unknown Source:12)」—— 有 mapping 文件能离线还原，但那要求
+# **每份报告都得先知道它是哪个版本、再找出对应的 mapping**，
+# 而报告最有用的时候恰恰是出事当场。留着，报告本身就能读。
+# 代价只有包体大一点点，不影响混淆强度（名字照样是混淆的）。
+-keepattributes SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile

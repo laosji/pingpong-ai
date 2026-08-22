@@ -55,7 +55,46 @@ object Cutter {
 
     sealed interface Outcome {
         data class Ok(val file: File, val durationMs: Long) : Outcome
-        data class Failed(val message: String, val cause: Throwable?) : Outcome
+        /**
+         * @param detail 失败现场，见 [describe]。**这是给人读的，不给代码判断。**
+         *   Media3 的 message 常常只有「Muxer error」三个字，真正有用的东西
+         *   全在 errorCode、cause 链和 ExportResult 里。
+         */
+        data class Failed(
+            val message: String, val cause: Throwable?, val detail: String = "",
+        ) : Outcome
+    }
+
+    /**
+     * 把一次失败的现场摊开成人能读的几行。
+     *
+     * **起因是一台真机报「Muxer error」，而我们除此之外一无所知。**
+     * 当时的链路是：Media3 抛 ExportException（message 就是那三个字）→
+     * Cutter 只取 message → Pipeline 再 `throw RuntimeException(message)`，
+     * **把 cause 整个扔掉** → 诊断报告里只剩一个指向我们自己代码的栈。
+     * 一整条链下来，唯一有信息量的东西一个都没留下。
+     *
+     * ExportResult 里恰好有这一整轮反复在猜的答案：**真正被选中的编码器是哪个、
+     * 实际用的分辨率是多少、走到第几帧才死、色彩信息是什么**。
+     * 这些不该靠猜，它们一直就在参数里。
+     */
+    private fun describe(r: ExportResult, e: ExportException): String = buildString {
+        append("错误码 ${e.getErrorCodeName()}(${e.errorCode})")
+        r.videoEncoderName?.let { append("；视频编码器 $it") }
+        r.audioEncoderName?.let { append("；音频编码器 $it") }
+        if (r.width > 0 || r.height > 0) append("；实际输出 ${r.width}x${r.height}")
+        // 走到第几帧才死：0 帧说明连第一段都没开始，几千帧说明是中途某一段
+        if (r.videoFrameCount > 0) append("；已编码 ${r.videoFrameCount} 帧")
+        if (r.durationMs > 0) append("；已成片 ${r.durationMs}ms")
+        r.colorInfo?.let { append("；色彩 $it") }
+        // cause 链才是真正的死因。Muxer 的底层异常就藏在这里。
+        var c: Throwable? = e.cause
+        var depth = 0
+        while (c != null && depth < 4) {
+            append("\n  ← ${c.javaClass.name}: ${c.message}")
+            c.stackTrace.firstOrNull()?.let { append("\n      at $it") }
+            c = c.cause; depth++
+        }
     }
 
     /**
@@ -290,7 +329,8 @@ object Cutter {
 
                     override fun onError(c: Composition, r: ExportResult, e: ExportException) {
                         synchronized(lock) {
-                            result = Outcome.Failed(e.message ?: "导出失败", e); lock.notifyAll()
+                            result = Outcome.Failed(e.message ?: "导出失败", e, describe(r, e))
+                            lock.notifyAll()
                         }
                     }
                 })

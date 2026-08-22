@@ -187,8 +187,22 @@ object Diagnostics {
         if (err != null) {
             appendLine("异常 ${err.javaClass.name}")
             appendLine("消息 ${err.message}")
+            // 剪辑失败的现场：错误码、真正被选中的编码器、实际分辨率、
+            // 死在第几帧。**Media3 的 message 常常只有「Muxer error」，
+            // 有信息量的全在这里。**
+            (err as? Pipeline.CutFailed)?.detail
+                ?.takeIf { it.isNotBlank() }?.let { appendLine("现场 $it") }
             // 只留前几帧：够定位，又不会长到用户不愿意发
             err.stackTrace.take(6).forEach { appendLine("  at $it") }
+            // **cause 链。** 外层异常往往只是个包装（我们自己包的、
+            // 或者 Media3 包的），真正的死因在下面几层。
+            var c: Throwable? = err.cause
+            var depth = 0
+            while (c != null && depth < 4) {
+                appendLine("起因 ${c.javaClass.name}: ${c.message}")
+                c.stackTrace.take(3).forEach { appendLine("  at $it") }
+                c = c.cause; depth++
+            }
         }
     }
 

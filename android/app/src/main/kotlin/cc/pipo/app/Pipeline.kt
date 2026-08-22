@@ -259,9 +259,26 @@ object Pipeline {
                 // 用户会怀疑是不是漏了一段。
                 Result(res.file, res.durationMs / 1000.0, clips)
             }
-            is Cutter.Outcome.Failed -> throw RuntimeException(res.message)
+            // **把 cause 带上。** 原来是 `throw RuntimeException(res.message)`，
+            // 一台真机报「Muxer error」时，诊断报告里就只剩这三个字加一段
+            // 指向我们自己代码的栈 —— 真正的死因（Media3 的错误码、muxer 底下
+            // 那个异常、实际选中的编码器和分辨率）全在这一行被丢掉了。
+            is Cutter.Outcome.Failed -> throw CutFailed(res.message, res.detail, res.cause)
+
         }
     }
+
+    /**
+     * 拼接成片失败。[detail] 是失败现场（见 Cutter.describe），**只进诊断报告，
+     * 不进界面** —— 界面上给用户看的是 [message]，人话；现场是给我们看的。
+     */
+    class CutFailed(raw: String, val detail: String, cause: Throwable?) :
+        // **界面上不要出现「Muxer error」。** 那是 Media3 内部的常量，
+        // 对用户既看不懂又无从下手，而它恰恰是最容易被看到的那一句
+        // （一台真机上用户看到的就是这四个英文字，除此之外什么都没有）。
+        // 原文留在括号里 —— 用户不需要，但截图发过来时我们需要。
+        Exception("没能把片段拼成成片（$raw）。点上面的「复制诊断信息」发给我们，" +
+            "里面有定位要用的东西。", cause)
 
     class OutputGone : Exception(
         "成片没能保住，多半是手机存储不够。清点空间再试一次。")
