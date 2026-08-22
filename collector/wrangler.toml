@@ -11,4 +11,4 @@ bucket_name = "pipo-feedback"
 
 [[kv_namespaces]]
 binding = "PIPO_RATE"
-id = "在这里填 kv namespace create 返回的 id"
+id = "1841856252f44367a4f4e4a5faff3e3d"

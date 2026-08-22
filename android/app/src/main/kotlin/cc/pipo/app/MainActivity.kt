@@ -110,7 +110,10 @@ private fun App() {
         stage = s
         // 打点。卡住时「卡在哪一步、前面几步花了多久」是第一手线索，
         // 而用户不会用 adb —— 不自己记就永远拿不到。
-        Diagnostics.mark(s.javaClass.simpleName)
+        //
+        // 用 Stage.mark 而不是 javaClass.simpleName：后者在 release 包里
+        // 会被 R8 改成 w0/v0/B0，见 Stage 的说明。
+        Diagnostics.mark(s.mark)
         val line = when (s) {
             is Pipeline.Stage.Decoded -> "读完 %.0f 秒音轨".format(s.seconds)
             is Pipeline.Stage.Detected -> "听到 ${s.n} 次可能的击球"

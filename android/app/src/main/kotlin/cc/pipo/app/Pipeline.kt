@@ -46,15 +46,37 @@ object Pipeline {
      * 而不是一个转了很久的圈。数字都是真的，不是编来撑场面的。
      */
     sealed interface Stage {
-        data object Decoding : Stage
-        data class Decoded(val seconds: Double) : Stage
-        data object Detecting : Stage
-        data class Detected(val n: Int) : Stage
+        /**
+         * 诊断时间线里用的名字。
+         *
+         * **必须是写死的字符串，不能用 `javaClass.simpleName`。** 原来就是
+         * 那么写的，debug 包里一切正常，而 release 包被 R8 改名之后，
+         * 传回来的报告是这样的：
+         *
+         *     各阶段（毫秒）
+         *       w0  14
+         *       v0  201
+         *       B0  2722
+         *
+         * 「卡在哪一步」正是这份报告最核心的一列，混淆之后完全读不出来 ——
+         * 而这个错误只会出现在正式包里，也就是只会出现在真实用户身上。
+         * 是把第一份真上传的报告取回来读了才发现的。
+         */
+        val mark: String
+
+        data object Decoding : Stage { override val mark = "解码音频" }
+        data class Decoded(val seconds: Double) : Stage { override val mark = "音频就绪" }
+        data object Detecting : Stage { override val mark = "检测击球" }
+        data class Detected(val n: Int) : Stage { override val mark = "击球检出" }
         /** [percent] 是真百分比：窗数在开始前就算得出来。 */
-        data class Reranking(val percent: Int) : Stage
-        data class Reranked(val kept: Int, val total: Int) : Stage
-        data class Grouped(val rallies: Int, val clips: Int) : Stage
-        data class Cutting(val percent: Int) : Stage
+        data class Reranking(val percent: Int) : Stage { override val mark = "重排中" }
+        data class Reranked(val kept: Int, val total: Int) : Stage {
+            override val mark = "重排完成"
+        }
+        data class Grouped(val rallies: Int, val clips: Int) : Stage {
+            override val mark = "分组完成"
+        }
+        data class Cutting(val percent: Int) : Stage { override val mark = "拼接成片" }
     }
 
     /**

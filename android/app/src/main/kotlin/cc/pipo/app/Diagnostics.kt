@@ -135,9 +135,18 @@ object Diagnostics {
         }
     }
 
-    /** 收集端。和反馈回流是同一个 Worker，只是另一条路由。 */
+    /**
+     * 收集端。和反馈回流是同一个 Worker，只是另一条路由。
+     *
+     * **子域是账号的，不是随便起的。** 这里原来写的是 `laosji`，
+     * 而 Worker 实际部署在 `baituodaren` 名下 —— `*.workers.dev` 的前半段
+     * 由 Cloudflare 账号决定，`wrangler deploy` 完了才知道是哪个。
+     * 那个错地址根本不存在，所以**每一份自动上报都发进了空气**，
+     * 而且是静默的（fire-and-forget、不重试、不报错，见下面）：
+     * 从应用这边看不出任何异常，只有主动去 curl 才会发现。
+     */
     private const val ENDPOINT =
-        "https://pipo-feedback.laosji.workers.dev/diag"
+        "https://pipo-feedback.baituodaren.workers.dev/diag"
 
     /**
      * 出错时自动传一份回来。**只在 BuildConfig.AUTO_DIAG 打开时**，
