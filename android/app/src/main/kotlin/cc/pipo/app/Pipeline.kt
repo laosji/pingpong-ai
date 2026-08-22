@@ -223,6 +223,22 @@ object Pipeline {
     ): Result {
         require(clips.isNotEmpty()) { "一段都不留就没得剪了。至少留一段。" }
         val size = sizeOf(ctx, uri)
+
+        // **切之前先查空间。** 模型下载查了，成片这一步一直没查 ——
+        // 而成片可能比源文件还大：实测 24 分钟素材（86MB）出片 2:54 就是
+        // 116MB，因为重编码走的是 Media3 给 1080p 的默认码率，
+        // 比手机录像常见的压缩率高。不查的话，空间不够时的表现是
+        // 「等几分钟，然后成片是 0 字节」（OutputGone），既慢又难懂。
+        //
+        // 估算按 1080p 约 5Mbps ≈ 每秒 640KB，再乘 2：保存到相册时
+        // 应用目录和相册各一份，两份要同时存在。
+        val outS = clips.sumOf { it.duration }
+        val needBytes = (outS * 640_000 * 2).toLong()
+        val free = File(ctx.filesDir.absolutePath).usableSpace
+        if (free < needBytes) {
+            throw NotEnoughRoom(needBytes / 1_000_000, free / 1_000_000)
+        }
+
         val out = File(outDir(ctx), "pipo_%d.mp4".format(System.currentTimeMillis()))
         val res = Cutter.cut(
             ctx,
@@ -249,6 +265,13 @@ object Pipeline {
 
     class OutputGone : Exception(
         "成片没能保住，多半是手机存储不够。清点空间再试一次。")
+
+    /**
+     * 空间不够放成片。**在开切之前就说**，别让用户等几分钟再看到失败。
+     */
+    class NotEnoughRoom(needMb: Long, freeMb: Long) : Exception(
+        "存储空间不够：这支成片大约要 ${needMb} MB（含保存到相册的那一份），" +
+            "手机只剩 ${freeMb} MB。清一些空间，或者少留几段再剪。")
 
     /**
      * 成片的落点。**不能用 cacheDir** —— 系统在低存储时会直接清空它，

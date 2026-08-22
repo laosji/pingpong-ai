@@ -127,7 +127,16 @@ object Cutter {
      */
     private fun deadlineFor(segments: List<Segment>): Long {
         val outS = segments.sumOf { (it.endS - it.startS).coerceAtLeast(0.0) }
-        return (outS * 20_000).toLong().coerceIn(90_000L, 10 * 60_000L)
+        // **段数也要算进去。** 原来只按成片时长，而每一段都有固定开销：
+        // 定位到非关键帧、重编码起始那个 GOP、切换输入。24 分钟素材实测
+        // 出 50 段，这部分开销加起来不比编码本身少。
+        //
+        // 封顶从 10 分钟提到 20 分钟：50 段的活儿在中低端机上有可能超过
+        // 10 分钟，那时候超时等于**在快做完的时候把成果扔掉** ——
+        // 用户看到的是「等了十分钟，然后失败」，比等二十分钟拿到成片更糟。
+        // 处理期间屏幕常亮、进度条一直在动，等待本身是可见的。
+        val perSegment = segments.size * 5_000L
+        return (outS * 20_000 + perSegment).toLong().coerceIn(90_000L, 20 * 60_000L)
     }
 
     fun cut(
