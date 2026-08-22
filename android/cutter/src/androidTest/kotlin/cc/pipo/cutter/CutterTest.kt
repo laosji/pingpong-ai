@@ -125,11 +125,12 @@ class CutterTest {
     }
 
     @Test
-    fun 画布取包围盒且收成偶数() {
+    fun 画布取包围盒且收到16的倍数() {
         assertEquals(Cutter.Canvas(1920, 1920),
             Cutter.pickCanvas(listOf(Cutter.Canvas(1920, 1080), Cutter.Canvas(1080, 1920))))
-        // 奇数会被收成偶数：H.264 的 4:2:0 色度平面吃不下奇数尺寸
-        assertEquals(Cutter.Canvas(640, 358),
+        // 收到 16 的倍数（不再只是偶数）：厂商编码器常要求 16 对齐，
+        // 不满足时表现是挂起而不是报错。359 -> 352，不是 358。
+        assertEquals(Cutter.Canvas(640, 352),
             Cutter.pickCanvas(listOf(Cutter.Canvas(641, 359))))
     }
 }

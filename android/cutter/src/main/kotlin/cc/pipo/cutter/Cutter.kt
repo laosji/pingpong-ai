@@ -179,10 +179,79 @@ object Cutter {
             ).build()
         }
 
-        val composition = Composition.Builder(
-            ImmutableList.of(EditedMediaItemSequence.Builder(items).build())
-        ).build()
+        val seq = ImmutableList.of(EditedMediaItemSequence.Builder(items).build())
 
+        // **HDR 素材要单独处理，而且没有一种模式在所有设备上都行。**
+        //
+        // 不设 hdrMode 时 Media3 默认 HDR_MODE_KEEP_HDR（原样保留 HDR），
+        // 而输出被写死成 H.264 —— H.264 配 HLG/PQ 几乎没有设备支持。
+        // 实测（HdrSourceTest，一段 BT.2020 + HLG + 10bit 的合成素材）：
+        // 默认模式直接 Video frame processing error。
+        //
+        // 但换成色调映射也不是稳赢：同一个测试在模拟器上会卡在**解码器** ——
+        // goldfish 解码器接不了 KEY_COLOR_TRANSFER_REQUEST，而两种色调映射
+        // 模式都要设它。也就是说「压成 SDR」在有些设备上反而更糟。
+        //
+        // 所以按顺序试，第一个成功的算数：
+        //  1. 色调映射到 SDR（我们的输出本来就是 SDR H.264，这是语义上对的）
+        //  2. 退回默认 —— 万一这台机器真能编 HDR H.264
+        // 只在**确实是 HDR 素材**时才多试一次；SDR 素材（到今天为止所有
+        // 跑通过的素材）一次直接走完，路径和以前完全一样，不引入新风险。
+        val hdr = segments.any { isHdr(context, it.uri) }
+        val modes = if (!hdr) listOf<Int?>(null) else listOf(
+            Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_OPEN_GL,
+            null,
+        )
+
+        var last: Outcome = Outcome.Failed("没有可用的导出方式", null)
+        for ((i, mode) in modes.withIndex()) {
+            val composition = Composition.Builder(seq)
+                .apply { if (mode != null) setHdrMode(mode) }
+                .build()
+            last = export(context, composition, out, budget, onProgress, shouldStop)
+            // 成功、被用户放弃、或者已经是最后一次 —— 都不再试。
+            // **超时不重试**：预算已经烧掉一次了，再来一次是让用户等两倍。
+            if (last is Outcome.Ok || last is Outcome.Failed && last.message == "已取消") break
+            if (i == modes.lastIndex) break
+            if (last is Outcome.Failed && last.message.startsWith("超时")) break
+        }
+        return last
+    }
+
+    /**
+     * 这段素材是不是 HDR。
+     *
+     * 只看颜色传输特性：PQ(ST2084) 和 HLG 是两种 HDR 曲线，其余都当 SDR。
+     * 读不出来就当 SDR —— **判错方向要选安全的那边**：把 HDR 当 SDR 只是
+     * 少试一次色调映射（还有第二轮兜底），把 SDR 当 HDR 则会给所有正常
+     * 素材加一条没验证过的路径。
+     */
+    internal fun isHdr(context: Context, uri: Uri): Boolean = runCatching {
+        val ex = android.media.MediaExtractor()
+        try {
+            ex.setDataSource(context, uri, null)
+            for (i in 0 until ex.trackCount) {
+                val f = ex.getTrackFormat(i)
+                val mime = f.getString(android.media.MediaFormat.KEY_MIME) ?: continue
+                if (!mime.startsWith("video/")) continue
+                if (!f.containsKey(android.media.MediaFormat.KEY_COLOR_TRANSFER)) continue
+                val t = f.getInteger(android.media.MediaFormat.KEY_COLOR_TRANSFER)
+                if (t == android.media.MediaFormat.COLOR_TRANSFER_ST2084 ||
+                    t == android.media.MediaFormat.COLOR_TRANSFER_HLG) return true
+            }
+        } finally { ex.release() }
+        false
+    }.getOrDefault(false)
+
+    /** 跑一次导出，同步等结果。[cut] 可能会用不同的 HDR 模式调它两次。 */
+    private fun export(
+        context: Context,
+        composition: Composition,
+        out: File,
+        budget: Long,
+        onProgress: ((Int) -> Unit)?,
+        shouldStop: (() -> Boolean)?,
+    ): Outcome {
         // **Transformer 把「构造它的那条线程」当成自己的应用线程**，之后
         // start / getProgress / cancel 全都必须回到同一条线程，否则直接
         // IllegalStateException: accessed on the wrong thread。

@@ -180,6 +180,25 @@ def main() -> None:
         import shutil
         shutil.copy(src, os.path.join(ASSET, "rerank.bin"))
 
+    # 5) 设备端解码基准（cutter 的 AudioDecodeParityTest）
+    #
+    # **这一段以前漏了。** 那个测试从写下来那天起就在 FileNotFoundException
+    # 上失败 —— 因为谁也没生成过 land.properties，而 gradle 的
+    # connectedAndroidTest 只在结尾报个总数，三个红的就那么一直红着。
+    #
+    # 它测的东西别处替代不了：core 的单元测试喂的是**已经解好的 PCM**，
+    # 只有这里验证「MediaCodec 在这台设备上解出来的波形，和 Python
+    # 用 ffmpeg 解出来的是同一段」。这条不成立，后面所有指标都不成立。
+    np.asarray(det, "<f8").tofile(os.path.join(ASSET, "land_hits.f64"))
+    rms = float(np.sqrt(np.mean(pcm16.astype(np.float64) ** 2)))
+    peak = float(np.max(np.abs(pcm16)))
+    with open(os.path.join(ASSET, "land.properties"), "w") as f:
+        for k, v in (("n16", len(pcm16)), ("rms16", repr(rms)),
+                     ("peak16", repr(peak))):
+            f.write("%s=%s\n" % (k, v))
+    print("  设备端基准：%d 采样，RMS %.6f，峰值 %.4f，%d 次击球"
+          % (len(pcm16), rms, peak, len(det)))
+
 
 if __name__ == "__main__":
     main()
