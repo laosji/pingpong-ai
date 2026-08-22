@@ -38,8 +38,34 @@ object Diagnostics {
 
     fun setSource(w: Int, h: Int) { source = w to h }
 
+    /**
+     * 正在跑分析/剪辑。只有这段时间里退到后台才值得记 —— 见 [onBackground]。
+     */
+    @Volatile
+    var busy = false
+    private var bg = 0
+
+    /**
+     * 应用退到后台了。
+     *
+     * **这是「卡在剪辑」的头号嫌疑。** 整条分析加剪辑跑在 Activity 的协程里，
+     * 没有前台服务也没有唤醒锁 —— 一旦退到后台，系统随时可以冻结或者直接
+     * 杀掉这个进程，而 EMUI 在这件事上比 AOSP 激进得多。用户回来看到的
+     * 就是一个永远不动的进度条。
+     *
+     * 现在处理期间会保持屏幕常亮（见 MainActivity），息屏这条堵住了；
+     * 但用户主动切走仍然会走到这里，所以记进时间线 —— 下次拿到报告时，
+     * 「第几秒退到后台、之后再没有新阶段」是一眼能看出来的形状。
+     */
+    fun onBackground() {
+        if (!busy) return
+        bg++
+        mark("退到后台#$bg")
+    }
+
     fun reset() {
         marks.clear()
+        bg = 0
         t0 = System.currentTimeMillis()
     }
 

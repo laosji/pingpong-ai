@@ -70,6 +70,15 @@ class MainActivity : ComponentActivity() {
         ModelStore.cleanup(this)      // 清掉上次中断的半截下载
         setContent { MaterialTheme(colorScheme = PipoDark) { App() } }
     }
+
+    /**
+     * 退到后台。**处理期间发生这件事很可能就是「卡住」的成因**，
+     * 所以记进诊断时间线，见 [Diagnostics.onBackground]。
+     */
+    override fun onStop() {
+        super.onStop()
+        Diagnostics.onBackground()
+    }
 }
 
 /**
@@ -147,6 +156,25 @@ private fun App() {
     var lastError by remember { mutableStateOf<Throwable?>(null) }
     // 保存中。**必须挡住重复点击** —— 点两下会往相册存两份。
     var saving by remember { mutableStateOf(false) }
+
+    // **处理期间屏幕不许灭。**
+    //
+    // 整条分析加剪辑跑在 Activity 的协程里 —— 没有前台服务，也没有唤醒锁。
+    // 屏幕一灭，应用就退到后台，系统可以随时冻结或者杀掉这个进程；
+    // EMUI 在这件事上比 AOSP 激进得多。用户放下手机等两分钟回来，
+    // 看到的就是一个永远不动的进度条 —— 和那台华为机器报上来的现象一样。
+    //
+    // 常亮是最小的够用解：屏幕不灭 -> 应用一直在前台 -> 谁也不会杀它。
+    // 真正完整的解是搬进前台服务（那样用户还能切去干别的），
+    // 但那要加权限、通知渠道、API 33 的通知授权，改动大得多；
+    // 而「放下手机等着」本来就是这个场景里绝大多数的情况。
+    val view = androidx.compose.ui.platform.LocalView.current
+    val busy = step == Step.Cut || recutting || saving
+    DisposableEffect(busy) {
+        view.keepScreenOn = busy
+        Diagnostics.busy = busy
+        onDispose { view.keepScreenOn = false; Diagnostics.busy = false }
+    }
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
