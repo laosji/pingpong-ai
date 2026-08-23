@@ -223,17 +223,31 @@ object Pipeline {
     ): Result {
         require(clips.isNotEmpty()) { "一段都不留就没得剪了。至少留一段。" }
         val size = sizeOf(ctx, uri)
+        val canvas = Cutter.pickCanvas(listOf(size))
 
         // **切之前先查空间。** 模型下载查了，成片这一步一直没查 ——
-        // 而成片可能比源文件还大：实测 24 分钟素材（86MB）出片 2:54 就是
-        // 116MB，因为重编码走的是 Media3 给 1080p 的默认码率，
-        // 比手机录像常见的压缩率高。不查的话，空间不够时的表现是
+        // 而成片可能比源文件还大（重编码走 Media3 的默认码率，
+        // 常比手机录像的压缩率高）。不查的话，空间不够时的表现是
         // 「等几分钟，然后成片是 0 字节」（OutputGone），既慢又难懂。
         //
-        // 估算按 1080p 约 5Mbps ≈ 每秒 640KB，再乘 2：保存到相册时
-        // 应用目录和相册各一份，两份要同时存在。
+        // **码率要按画布面积算，不能拍一个平地板。**
+        // 第一版写死每秒 640KB（照 1080p 估的），实测下来差得离谱：
+        //
+        //     1072x1920   667 KB/s
+        //      400x720    168 KB/s      <- 差 4 倍
+        //
+        // 按 640 拍平的话，一支 400x720 的 9 分半成片会被要求 719MB，
+        // 而它实际只占 94MB —— **把空间明明够的用户挡在门外**，
+        // 比不查还糟。码率对像素数是次线性的，用 sqrt 拟合这两个实测点：
+        //
+        //     每秒字节 ≈ 460 * sqrt(宽*高)
+        //     1072x1920 -> 660 KB/s（实测 667，几乎正好）
+        //      400x720  -> 247 KB/s（实测 168，留 1.5 倍余量）
+        //
+        // 再乘 2：保存到相册时应用目录和相册各一份，两份要同时存在。
         val outS = clips.sumOf { it.duration }
-        val needBytes = (outS * 640_000 * 2).toLong()
+        val perSec = 460.0 * kotlin.math.sqrt((canvas.width.toDouble() * canvas.height))
+        val needBytes = (outS * perSec * 2).toLong()
         val free = File(ctx.filesDir.absolutePath).usableSpace
         if (free < needBytes) {
             throw NotEnoughRoom(needBytes / 1_000_000, free / 1_000_000)
@@ -243,7 +257,7 @@ object Pipeline {
         val res = Cutter.cut(
             ctx,
             clips.map { Cutter.Segment(uri, it.start, it.end) },
-            out, Cutter.pickCanvas(listOf(size)),
+            out, canvas,
             onProgress = { onStage(Stage.Cutting(it)) },
             shouldStop = shouldStop,
         )

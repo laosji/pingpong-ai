@@ -71,6 +71,9 @@ class MainActivity : ComponentActivity() {
         // 上次剪到一半被系统杀掉的现场。**必须在这里传** —— 那种失败
         // 不抛异常，当时没人有机会上报，只有下次启动能捡回来。
         Diagnostics.sendLeftover(this)
+        // 之前没传上去的（当时没网、或者传到一半进程没了）。一台真机报了
+        // 「Muxer error」而这边什么都没收到，就是因为上报原本发一次就算。
+        Diagnostics.flushOutbox(this)
         setContent { MaterialTheme(colorScheme = PipoDark) { App() } }
     }
 
@@ -90,6 +93,39 @@ class MainActivity : ComponentActivity() {
  * 毫无共同点：一个只有进度条，一个是播放器加一串可删的片段。
  */
 private enum class Step { Pick, Theme, Cut, Edit, Done }
+
+/**
+ * 把异常翻成用户能看懂、而且**知道下一步该做什么**的一句话。
+ *
+ * **只有一处** —— 之前首次剪辑和删段重剪各有一套，同一个 OOM
+ * 在前者有中文提示、在后者甩英文原文。这种分叉迟早会再长出来，
+ * 除非只留一个入口。
+ *
+ * 原则：能说清「为什么」和「怎么办」的才翻；翻不了的宁可保留原文，
+ * 也不要编一句听起来很友好但没信息的话 —— 原文至少还能截图发过来。
+ */
+private fun humanize(e: Throwable): String = base(e) + leftHint()
+
+/**
+ * 这一轮切走过就补一句。**放在最后而不是替换掉原因** ——
+ * 切走不一定是这次失败的原因，但它是用户**唯一能自己避开**的那个因素，
+ * 所以值得说；而把它说成原因就成了甩锅。
+ */
+private fun leftHint(): String =
+    if (Diagnostics.leftDuringWork)
+        "\n\n（这次处理中途切到了别的应用。剪辑期间系统可能会回收后台应用，" +
+            "下次留在页面上试试。）"
+    else ""
+
+private fun base(e: Throwable): String = when (e) {
+    // 系统抛的原文是「Failed to allocate a 139739088 byte
+    // allocation with 25100288 free bytes and 55MB until OOM」——
+    // 一句英文加一串字节数，用户既看不懂也不知道该做什么。
+    // 实测就是这么甩到一位用户脸上的。
+    is OutOfMemoryError ->
+        "这段录像太长，这台手机的内存放不下。分成几段再剪就行 —— 十分钟以内比较稳。"
+    else -> e.message ?: e.toString()
+}
 
 // CenterAlignedTopAppBar 目前仍是实验 API。显式 OptIn 而不是关掉整个警告 ——
 // 关掉的话以后真有 API 变更也不会被提醒。
@@ -230,16 +266,7 @@ private fun App() {
             } catch (e: Throwable) {
                 // 「已取消」是放弃之后 Cutter 的返回值，同样不该当错误显示
                 if (e.message == "已取消") throw kotlinx.coroutines.CancellationException()
-                error = when (e) {
-                    // 系统抛的原文是「Failed to allocate a 139739088 byte
-                    // allocation with 25100288 free bytes and 55MB until OOM」——
-                    // 一句英文加一串字节数，用户既看不懂也不知道该做什么。
-                    // 实测就是这么甩到一位用户脸上的。
-                    is OutOfMemoryError ->
-                        "这段录像太长，这台手机的内存放不下。分成几段再剪就行 —— " +
-                            "十分钟以内比较稳。"
-                    else -> e.message ?: e.toString()
-                }
+                error = humanize(e)
                 lastError = e
                 Diagnostics.autoSend(ctx, e)
                 retryable = e is ModelStore.Interrupted
@@ -275,7 +302,10 @@ private fun App() {
             // 旧成片可以收了，但要留住正在放的这份
             withContext(Dispatchers.IO) { Pipeline.clearOutputs(ctx, keep = r.file) }
         } catch (e: Throwable) {
-            error = e.message ?: e.toString()
+            // **和主路径用同一套人话。** 之前这里是 e.message ?: e.toString()，
+            // 同一个 OOM 在首次剪辑时有中文提示，在删掉一段重剪时却甩英文原文。
+            error = humanize(e)
+            Diagnostics.autoSend(ctx, e)   // 重剪失败一样要能查，之前漏了
             removed = applied    // 切失败就退回上一个能用的状态，别让界面和成片对不上
         } finally {
             recutting = false; stage = null
@@ -675,6 +705,23 @@ private fun CutStep(stage: Pipeline.Stage?, dl: ModelStore.Progress?, facts: Lis
                     }
                 }
             }
+        }
+
+        // **别切走。** 实测（模拟器，AOSP）：按 HOME 之后处理确实还在跑，
+        // 后台 60 秒 CPU tick 涨了 3663，比前台还快 —— 因为不用渲染界面了。
+        // 但同一时刻 oom_score_adj 从 0 跳到 **900**，也就是「缓存应用」档：
+        // 内存一紧张就是第一批被杀的，而被杀时不抛异常、没有任何提示，
+        // 用户看到的就是「回来一看，什么都没了」。
+        // 模拟器有 16GB 所以扛过去了，手机不一定 —— EMUI 尤其激进。
+        //
+        // 所以这句不是客套，是**真的会丢东西**。放在耗时提示前面，
+        // 用 primary 色，和下面那句灰色的隐私说明区分开。
+        Row(verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("请留在这一页", fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.primary)
+            Text("切到别的应用可能会被系统中断，得从头再来",
+                fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 
         Text("已用 %d:%02d · 全程在这台手机上完成，录像不会上传。"

@@ -60,12 +60,31 @@ object Diagnostics {
     fun onBackground() {
         if (!busy) return
         bg++
+        leftDuringWork = true
         mark("退到后台#$bg")
     }
+
+    /**
+     * 这一轮处理期间用户切走过。**界面要据此说一句话** ——
+     *
+     * 实测（模拟器，AOSP）：切到后台之后活儿确实还在跑，60 秒 CPU tick 涨了
+     * 3663，比前台还快（不用渲染界面）。**但 oom_score_adj 从 0 跳到 900** ——
+     * 「缓存应用」档，内存一紧张就是第一批被杀，而被杀时不抛异常、
+     * 没有任何提示，用户看到的就是「回来一看什么都没了」。
+     * 模拟器有 16GB 所以扛过去了，手机不一定，EMUI 尤其激进。
+     *
+     * 所以真出事时，「你中途切走过」是最该让用户知道的一条信息 ——
+     * 否则他只会觉得这个应用坏了，而不知道下次该怎么避开。
+     * [reset] 会清掉，每轮独立。
+     */
+    @Volatile
+    var leftDuringWork = false
+        private set
 
     fun reset() {
         marks.clear()
         bg = 0
+        leftDuringWork = false
         t0 = System.currentTimeMillis()
     }
 
@@ -216,45 +235,105 @@ object Diagnostics {
      * 而且是静默的（fire-and-forget、不重试、不报错，见下面）：
      * 从应用这边看不出任何异常，只有主动去 curl 才会发现。
      */
-    private const val ENDPOINT =
-        "https://pipo-feedback.baituodaren.workers.dev/diag"
+    /**
+     * **自有域名在前，workers.dev 兜底。**
+     *
+     * `*.workers.dev` 这个 SNI 在国内被针对性阻断的情况很常见，而且
+     * **在开发机上测不出来** —— 那台机器挂着 TUN 代理，怎么测都是通的
+     * （系统解析返回 198.18.x.x 的 fake-ip 就是证据）。
+     * 一台真机报了「Muxer error」而这边什么都没收到，这是最可能的原因之一。
+     * DNS 不是问题：国内解析器返回的是真 Cloudflare IP，没有被污染。
+     *
+     * 两个都留着而不是直接换掉：换掉的话，已经发出去的包全都失联；
+     * 而两条链路同时被阻断的概率，比任何一条单独被阻断都低。
+     */
+    private val ENDPOINTS = listOf(
+        "https://diag.showmyapps.cc/diag",
+        "https://pipo-feedback.baituodaren.workers.dev/diag",
+    )
 
     /**
      * 出错时自动传一份回来。**只在 BuildConfig.AUTO_DIAG 打开时**，
      * 那是给自己人测试的包用的，正式版必须先问过用户。
      *
-     * 三条硬约束：
-     *  * **绝不阻塞** —— 单开线程，失败就算了。诊断是附加品，
-     *    不能让「传不上去」变成用户看到的第二个错误。
-     *  * **绝不重试** —— 传丢一份无所谓，而重试会在没网的地方变成
-     *    一串后台请求，耗电又没意义。
+     * 两条硬约束：
+     *  * **绝不阻塞** —— 单开线程。诊断是附加品，不能让「传不上去」
+     *    变成用户看到的第二个错误。
      *  * **内容和界面上那个「复制」按钮完全一样** —— 不存在
      *    「传回去的比给用户看的多」这种事。
+     *
+     * **原来还有第三条「绝不重试」，是错的，代价已经付过了。**
+     * 一台真机报了「Muxer error」，而这边什么都没收到：复制按钮用户
+     * 点不了、手机没插在开发机上、上报又是发一次就算 —— 三条路同时断，
+     * 那份日志等于从来没存在过。理由当时写的是「传丢一份无所谓」，
+     * 可**恰恰是出问题那次最不能丢**，而出问题的机器往往就是网络也不好的
+     * 那台。改成落盘进 outbox，下次启动补传，传成功才删。
      */
     fun autoSend(ctx: Context, err: Throwable?) {
         if (!BuildConfig.AUTO_DIAG) return
         post(ctx, report(ctx, err))
     }
 
-    /** 真正发送的那一段。[autoSend] 和 [sendLeftover] 共用。 */
+    /** 待补传的报告。传成功就删，所以平时是空的。 */
+    private fun outbox(ctx: Context) = File(ctx.filesDir, "diag_outbox").apply { mkdirs() }
+
+    /**
+     * 真正发送的那一段。[autoSend] 和 [sendLeftover] 共用。
+     *
+     * **先落盘，再发；发成功才删。** 顺序不能反 —— 反过来的话，
+     * 进程在发送途中被杀就什么都不剩了，而那正是我们最想抓的场景。
+     */
     private fun post(ctx: Context, body: String) {
         val id = installId(ctx)
+        val f = File(outbox(ctx), "%d.txt".format(System.currentTimeMillis()))
+        runCatching { f.writeText(body) }
         Thread {
-            runCatching {
-                (URL(ENDPOINT).openConnection() as HttpsURLConnection).apply {
-                    requestMethod = "POST"
-                    doOutput = true
-                    connectTimeout = 10_000
-                    readTimeout = 10_000
-                    setRequestProperty("Content-Type", "text/plain; charset=utf-8")
-                    setRequestProperty("X-Pipo-Install", id)
-                }.use { c ->
-                    c.outputStream.use { it.write(body.toByteArray()) }
-                    c.responseCode
-                }
+            if (send(body, id)) runCatching { f.delete() }
+        }.apply { isDaemon = true }.start()
+    }
+
+    /**
+     * 把 outbox 里积压的补传掉。启动时跑一次。
+     *
+     * 只补最近 20 份、且只在这一轮里各试一次 —— **不做退避重试循环**：
+     * 没网的地方那会变成一串后台请求，耗电又没意义。下次启动自然还会再试。
+     */
+    fun flushOutbox(ctx: Context) {
+        if (!BuildConfig.AUTO_DIAG) return
+        val files = outbox(ctx).listFiles()?.sortedBy { it.name }?.takeLast(20) ?: return
+        if (files.isEmpty()) return
+        val id = installId(ctx)
+        Thread {
+            files.forEach { f ->
+                val body = runCatching { f.readText() }.getOrNull()
+                // 读不出来或者空的，留着也没用
+                if (body.isNullOrBlank()) { runCatching { f.delete() }; return@forEach }
+                if (send(body, id)) runCatching { f.delete() }
             }
         }.apply { isDaemon = true }.start()
     }
+
+    /**
+     * @return 服务端确实收下了才算成功 —— 2xx 之外一律当没传到，留着下次再试。
+     *
+     * 按顺序试每个地址，**任意一个成功就停**。见 [ENDPOINTS]。
+     */
+    private fun send(body: String, id: String): Boolean =
+        ENDPOINTS.any { sendTo(it, body, id) }
+
+    private fun sendTo(endpoint: String, body: String, id: String): Boolean = runCatching {
+        (URL(endpoint).openConnection() as HttpsURLConnection).apply {
+            requestMethod = "POST"
+            doOutput = true
+            connectTimeout = 10_000
+            readTimeout = 10_000
+            setRequestProperty("Content-Type", "text/plain; charset=utf-8")
+            setRequestProperty("X-Pipo-Install", id)
+        }.use { c ->
+            c.outputStream.use { it.write(body.toByteArray()) }
+            c.responseCode in 200..299
+        }
+    }.getOrDefault(false)
 
     /**
      * 安装编号。**随机生成、只存在本机、和任何账号无关** ——

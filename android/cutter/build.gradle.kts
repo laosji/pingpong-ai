@@ -18,7 +18,12 @@ android {
         // 所以 26 这个下限现在只有「官方文档说关键能力从 26 起才齐」这一条
         // 依据，没有实测支撑。要降的话得先在 API 24/25 上把切片跑通几十次
         // 看稳定性，而不是跑一次就下结论 —— 两个方向的结论都不能只跑一次。
-        minSdk = 26
+        //
+        // **只在真机排查时临时下探**，用 -PpipoMinSdk=25，不改这里的默认值：
+        // 手上唯一一台带高通硬件编码器的机器（同一台 E5803）是 API 25，
+        // 而模拟器只有软件编码器 —— 有些失败（一台真机报的 Muxer error）
+        // 只在硬件编码器上出现，不下探就一次都测不到。
+        minSdk = (project.findProperty("pipoMinSdk") as String?)?.toInt() ?: 26
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // ONNX Runtime 每个 ABI 一份原生库，四个 ABI 全打进去测试 APK 就是 80MB。
         // 正式发版应该用 ABI splits 或 AAB，让每台设备只下自己那份。

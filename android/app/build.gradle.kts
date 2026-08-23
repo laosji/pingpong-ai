@@ -14,8 +14,8 @@ android {
         applicationId = "cc.pipo.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.1.6"
+        versionCode = 9
+        versionName = "0.1.8"
         // ONNX Runtime 每个 ABI 一份原生库。
         // **不要在这里写死 abiFilters** —— 之前只留 arm64-v8a，
         // armeabi-v7a 和 x86_64 的机器直接装不上。正式发版走 AAB，

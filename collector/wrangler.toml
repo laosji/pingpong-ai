@@ -2,6 +2,23 @@ name = "pipo-feedback"
 main = "worker.js"
 compatibility_date = "2026-01-01"
 
+# **workers.dev 也要留着。** 加了 routes 之后 wrangler 默认会把它关掉，
+# 而已经发出去的包里写的还是那个地址 —— 关掉等于把它们的上报路一起断了。
+# 两条并存，客户端先试自有域名、失败再回落。
+# （必须写在 [[routes]] 之前：TOML 里表之后的键会被算进那个表。）
+workers_dev = true
+
+# **自有域名，不是 *.workers.dev。**
+# workers.dev 这个 SNI 在国内被针对性阻断的情况很常见 —— 一台真机报了
+# 「Muxer error」而收集端什么都没收到，这是最可能的原因之一（DNS 是干净的，
+# 解析得到真 Cloudflare IP，所以问题不在解析层）。开发机上测不出来：
+# 那台机器挂着 TUN 代理，怎么测都是通的。
+# 绑到自有域名的子域上就完全不带那个 SNI 了。
+# custom_domain = true 会连 DNS 记录一起建。
+[[routes]]
+pattern = "diag.showmyapps.cc"
+custom_domain = true
+
 # 反馈落在 R2，限频计数落在 KV。两个都要先建好并把 id 填进来：
 #   npx wrangler r2 bucket create pipo-feedback
 #   npx wrangler kv namespace create PIPO_RATE
