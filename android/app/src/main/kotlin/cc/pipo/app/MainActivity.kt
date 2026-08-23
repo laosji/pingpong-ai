@@ -238,6 +238,11 @@ private fun App() {
         // arm 而不是 reset：从这一刻起每个打点都会落盘，进程被系统杀掉时
         // 现场还留在磁盘上，下次启动捡回来传。收尾在下面的 finally。
         Diagnostics.arm(ctx)
+        // 把进程钉在前台档，这样用户切走时不会掉进「缓存应用」档被顺手杀掉。
+        // 界面上那句「请留在这一页」还留着 —— 前台服务不是万能的
+        // （厂商省电策略、6 小时配额、起不来时静默失败），
+        // 两条一起用：能扛住就扛住，扛不住至少用户知道该怎么避开。
+        WorkService.start(ctx)
         facts = emptyList()          // 不清的话第二次剪会接在第一次的清单后面
         // 记住这个任务，用户放弃时才能真的取消 —— 不取消的话它会在后台
         // 接着跑完两分钟的分析，白白吃电和内存。
@@ -277,6 +282,9 @@ private fun App() {
                 // 才走不到这里，而那正是我们要靠磁盘上那份现场捡回来的情况。
                 // 报错那条上面已经 autoSend 过了，这里删掉避免下次启动重复传。
                 Diagnostics.disarm()
+                // 通知必须撤掉，否则会一直挂在状态栏上。
+                // 和 disarm 一样放在 finally：三种收尾都要走到。
+                WorkService.stop(ctx)
             }
         }
     }
@@ -291,6 +299,9 @@ private fun App() {
         kotlinx.coroutines.delay(500)
         recutting = true
         error = null
+        // 重剪同样是几分钟的活，一样要钉住进程 —— 用户删完段之后
+        // 更可能顺手切走去干别的。
+        WorkService.start(ctx)
         try {
             val keep = allClips.filterIndexed { i, _ -> i !in removed }
             val r = withContext(Dispatchers.IO) {
@@ -308,6 +319,7 @@ private fun App() {
             Diagnostics.autoSend(ctx, e)   // 重剪失败一样要能查，之前漏了
             removed = applied    // 切失败就退回上一个能用的状态，别让界面和成片对不上
         } finally {
+            WorkService.stop(ctx)
             recutting = false; stage = null
         }
     }

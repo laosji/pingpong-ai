@@ -12,6 +12,19 @@
       只是拦的位置由这台机器自己决定，而不是所有人共用一个写死的数。
     -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!--
+      前台服务：处理期间把进程钉在前台档。实测切到后台后 oom_score_adj
+      从 0 跳到 900（「缓存应用」档，内存一紧就是第一批被杀，且被杀时
+      不抛异常、没有任何提示）。详见 WorkService 的注释。
+      MEDIA_PROCESSING 是 API 34 起要求的类型声明，语义就是「转码媒体」。
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
+    <!--
+      通知权限（API 33 起）。**不主动要** —— 前台服务不给通知权限照样跑，
+      只是那条通知用户看不见；为了一条纯功能性的通知去弹权限框，
+      在第一次使用时打断用户，不划算。系统会在合适的时候自己提示。
+    -->
     <application
         android:label="Pipo"
         android:icon="@mipmap/ic_launcher"
@@ -26,5 +39,8 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <service android:name=".WorkService"
+                 android:exported="false"
+                 android:foregroundServiceType="mediaProcessing" />
     </application>
 </manifest>
