@@ -75,24 +75,36 @@ class EncoderCapabilityTest {
             544 to 960,     // 我们的原片
             480 to 848,
         )
+        // **只要有一个编码器能接受就行，不是每一个都要。**
+        //
+        // 原来是「所有编码器都必须接受」，在 Sony E5803 上当场失败：
+        // 那台机器的软件编码器 OMX.google.h264.encoder 上限只有 1920x1088，
+        // 连 720x1280 的竖屏都超了。但它同时有 OMX.qcom.video.encoder.avc，
+        // 真正干活的是后者 —— Media3 会挑一个能编的，还自带分辨率回退。
+        // 按「全都要过」来卡，等于把一个正常设备判成坏的。
         val bad = ArrayList<String>()
         for ((sw, sh) in sources) {
             val c = Cutter.pickCanvas(listOf(Cutter.Canvas(sw, sh)))
+            val reject = ArrayList<String>()
+            var okBy: String? = null
             for (e in list) {
                 val reasons = ArrayList<String>()
-                if (c.width % e.wAlign != 0) reasons.add("宽 ${c.width} 不是 ${e.wAlign} 的倍数")
-                if (c.height % e.hAlign != 0) reasons.add("高 ${c.height} 不是 ${e.hAlign} 的倍数")
+                if (c.width % e.wAlign != 0) reasons.add("宽不是 ${e.wAlign} 的倍数")
+                if (c.height % e.hAlign != 0) reasons.add("高不是 ${e.hAlign} 的倍数")
                 if (c.width > e.maxW || c.height > e.maxH) {
                     reasons.add("超过上限 ${e.maxW}x${e.maxH}")
                 }
-                if (reasons.isNotEmpty()) {
-                    bad.add("源 ${sw}x$sh -> 画布 ${c.width}x${c.height}"
-                        + " 在 ${e.name} 上：${reasons.joinToString("，")}")
-                }
+                if (reasons.isEmpty()) { if (okBy == null) okBy = e.name }
+                else reject.add("${e.name}（${reasons.joinToString("，")}）")
             }
-            println("  ${sw}x$sh -> ${c.width}x${c.height}")
+            println("  ${sw}x$sh -> ${c.width}x${c.height}"
+                + if (okBy != null) "  由 $okBy 承接" else "  **没有编码器能接**")
+            // 谁接不了仍然打出来 —— 那是真实信息：软编接不了就意味着
+            // 硬编一旦被占用或回退，这条路就断了。只是不当失败。
+            if (reject.isNotEmpty()) println("      接不了：${reject.joinToString("；")}")
+            if (okBy == null) bad.add("源 ${sw}x$sh -> 画布 ${c.width}x${c.height}")
         }
-        assertTrue("画布不被编码器接受：\n" + bad.joinToString("\n"), bad.isEmpty())
+        assertTrue("这些尺寸一个编码器都找不到：\n" + bad.joinToString("\n"), bad.isEmpty())
     }
 
     /**

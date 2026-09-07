@@ -27,7 +27,18 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // ONNX Runtime 每个 ABI 一份原生库，四个 ABI 全打进去测试 APK 就是 80MB。
         // 正式发版应该用 ABI splits 或 AAB，让每台设备只下自己那份。
-        ndk { abiFilters += listOf("arm64-v8a") }
+        //
+        // **默认只打 arm64-v8a 是为了本地构建快**，但那样打出来的测试 APK
+        // 在 x86 设备上装不上 —— 送去 Firebase Test Lab 跑机型矩阵时，
+        // 一半的机器会直接失败，而失败原因和被测的东西毫无关系。
+        // 用 -PpipoAbi=all 打全。
+        (project.findProperty("pipoAbi") as String?).let { a ->
+            when (a) {
+                null -> ndk { abiFilters += listOf("arm64-v8a") }
+                "all" -> Unit                       // 不设过滤 = 全都打
+                else -> ndk { abiFilters += a.split(",") }
+            }
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

@@ -12,7 +12,12 @@ android {
     compileSdk = 35
     defaultConfig {
         applicationId = "cc.pipo.app"
-        minSdk = 26
+        // **只在真机排查时临时下探**，用 -PpipoMinSdk=25，不改默认值。
+        // 手上唯一一台带高通硬件编解码器的机器（Sony E5803）是 API 25，
+        // 而模拟器只有软件编解码器 —— 有些问题只在厂商实现上出现，
+        // 不下探就一次都测不到。cutter 模块有同样的开关。
+        // 正式发版不带这个参数，仍然是 26（依据见 cutter/build.gradle.kts）。
+        minSdk = (project.findProperty("pipoMinSdk") as String?)?.toInt() ?: 26
         targetSdk = 35
         versionCode = 13
         versionName = "0.2.2"
