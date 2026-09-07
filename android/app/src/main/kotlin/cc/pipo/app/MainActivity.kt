@@ -3,6 +3,7 @@ package cc.pipo.app
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
@@ -174,6 +175,17 @@ private fun App() {
     var allClips by remember { mutableStateOf<List<Pipeline.Clip>>(emptyList()) }
     var removed by remember { mutableStateOf<Set<Int>>(emptySet()) }
     var applied by remember { mutableStateOf<Set<Int>>(emptySet()) }   // 当前成片对应的删除集
+    // 只保留画面的哪一半（把对手裁出画外）。和 removed 一样是「待应用」+
+    // 「已应用」两份 —— 界面要据此判断当前成片是不是还对得上用户的选择。
+    // 每段的头尾微调量（秒）。key 是 allClips 的下标，值是 (头, 尾)：
+    // 头为负 = 往前多留，尾为正 = 往后多留。
+    //
+    // **为什么需要它**：切点来自击球声，而一个回合的开头（抛球、引拍）和
+    // 结尾（球落地、捡球）本来就没有声音。固定留白（头 0.4 / 尾 0.7 秒）
+    // 必然有时不够、有时多余，而每个回合都不一样 —— 这不是调常数能解决的。
+    // 与其我去猜一个更好的常数，不如把这 0.1 秒交给看得见画面的人。
+    var nudge by remember { mutableStateOf<Map<Int, Pair<Double, Double>>>(emptyMap()) }
+    var nudgeApplied by remember { mutableStateOf<Map<Int, Pair<Double, Double>>>(emptyMap()) }
     var recutting by remember { mutableStateOf(false) }
     /**
      * 当前成片是不是最新的。
@@ -313,9 +325,12 @@ private fun App() {
     //
     // 500 毫秒的防抖：用户常会连着划掉三四段，每划一次就切一次的话
     // 前面几次全是白干，而切片要真跑一遍 Transformer。
-    LaunchedEffect(removed, step) {
+    // keep 也是重剪的触发条件之一：换保留哪一半要重新走一遍 Transformer，
+    // 和删段是同一类改动，共用同一套防抖和「待应用 / 已应用」判断。
+    LaunchedEffect(removed, nudge, step) {
         val u = uri
-        if (step != Step.Edit || u == null || removed == applied) return@LaunchedEffect
+        if (step != Step.Edit || u == null ||
+            (removed == applied && nudge == nudgeApplied)) return@LaunchedEffect
         kotlinx.coroutines.delay(500)
         recutting = true
         error = null
@@ -323,12 +338,19 @@ private fun App() {
         // 更可能顺手切走去干别的。
         WorkService.start(ctx)
         try {
-            val keep = allClips.filterIndexed { i, _ -> i !in removed }
+            val adj = nudge
+            val kept = allClips.mapIndexedNotNull { i, c ->
+                if (i in removed) null else {
+                    val (h, t) = adj[i] ?: (0.0 to 0.0)
+                    Pipeline.Clip(c.start + h, c.end + t)
+                }
+            }
             val r = withContext(Dispatchers.IO) {
-                Pipeline.cut(ctx, u, keep, { stage = it }) { !coroutineContext.isActive }
+                Pipeline.cut(ctx, u, kept, { stage = it }) { !coroutineContext.isActive }
             }
             result = r
             applied = removed
+            nudgeApplied = adj
             saved = false        // 存过的是上一版，这版还没存
             // 旧成片可以收了，但要留住正在放的这份
             withContext(Dispatchers.IO) { Pipeline.clearOutputs(ctx, keep = r.file) }
@@ -337,7 +359,7 @@ private fun App() {
         } catch (e: Pipeline.Cancelled) {
             // **这条以前整个漏了。** 主路径有取消判断，重剪路径一条都没有 ——
             // 在成片页删掉一段、重剪途中放弃，照样会弹红色错误卡片。
-            removed = applied
+            removed = applied; nudge = nudgeApplied
         } catch (e: Throwable) {
             // **和主路径用同一套人话。** 之前这里是 e.message ?: e.toString()，
             // 同一个 OOM 在首次剪辑时有中文提示，在删掉一段重剪时却甩英文原文。
@@ -529,6 +551,27 @@ private fun App() {
                     thumbs = thumbs,
                     onToggle = { i ->
                         removed = if (i in removed) removed - i else removed + i
+                    },
+                    nudge = nudge,
+                    onNudge = { i, dh, dt ->
+                        val (h, t) = nudge[i] ?: (0.0 to 0.0)
+                        val c = allClips[i]
+                        // **不能越过邻段，也不能跑出素材。** 越过邻段的话
+                        // 同一段画面会在成片里出现两次，而用户只会觉得「重复了」，
+                        // 完全联想不到是自己多点了两下。
+                        val prevEnd = allClips.getOrNull(i - 1)
+                            ?.let { p -> p.end + (nudge[i - 1]?.second ?: 0.0) } ?: 0.0
+                        val nextStart = allClips.getOrNull(i + 1)
+                            ?.let { n -> n.start + (nudge[i + 1]?.first ?: 0.0) }
+                            ?: Double.MAX_VALUE
+                        val nh = (h + dh).let { v ->
+                            (c.start + v).coerceIn(prevEnd, c.end + t - 0.3) - c.start
+                        }
+                        val nt = (t + dt).let { v ->
+                            (c.end + v).coerceIn(c.start + nh + 0.3, nextStart) - c.end
+                        }
+                        nudge = if (kotlin.math.abs(nh) < 1e-6 && kotlin.math.abs(nt) < 1e-6)
+                            nudge - i else nudge + (i to (nh to nt))
                     },
                 )
 
@@ -852,9 +895,24 @@ private fun EditStep(
     allClips: List<Pipeline.Clip>, removed: Set<Int>, recutting: Boolean,
     thumbs: List<android.graphics.Bitmap?>,
     onToggle: (Int) -> Unit,
+    nudge: Map<Int, Pair<Double, Double>>,
+    /** (段下标, 头部增量秒, 尾部增量秒)。负数=往前，正数=往后。 */
+    onNudge: (Int, Double, Double) -> Unit,
 ) {
     val keptCount = allClips.size - removed.size
     val player = rememberPlayer(result?.file)
+
+    // 成片的宽高比，播放器按它定高度。
+    //
+    // **读文件元数据，不轮询 player.videoSize** —— 后者实测拿不到值：
+    // 画面明明已经在放了，videoSize 却一直是 0，于是比例算成 0、
+    // 播放器退回「吃满剩余高度」，上下两条大黑边。成片文件就在手上，
+    // 一次读准比盯着播放器状态可靠。
+    var aspect by remember(result?.file) { mutableStateOf(0f) }
+    LaunchedEffect(result?.file) {
+        val f = result?.file ?: return@LaunchedEffect
+        aspect = withContext(Dispatchers.IO) { Pipeline.aspectOf(f) }
+    }
 
     // 播放位置。**必须轮询** —— ExoPlayer 没有「位置变了」的回调
     // （它是连续量，事件化没有意义）。150 毫秒够跟上眼睛，
@@ -888,8 +946,37 @@ private fun EditStep(
     // 画面优先：标题去掉了，视频吃掉所有剩余高度，片段条贴着底。
     // 这一页用户是在「看」，不是在「读」—— 每让出一行文字，
     // 画面就大一点。段数和体积压成一行小字跟在下面。
+    // 选框模式，以及拖动中的草稿。草稿单独存是为了「取消」能原样退回，
+    // 也为了拖动过程不触发重剪。
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        if (result != null) PlayerBox(player, Modifier.weight(1f))
+        // **盒子跟着画面比例走，不要给一个固定的大高度。**
+        //
+        // 原来是 `PlayerBox(player, Modifier.weight(1f))`：盒子吃掉所有剩余
+        // 高度，而 RESIZE_MODE_FIT 只会把画面等比塞进去 —— 横屏成片放进一个
+        // 很高的盒子，上下就是两条大黑边，画面看着「特别小」。
+        //
+        // 这里显式算尺寸，不用 aspectRatio 修饰符：那个要么宽度优先、
+        // 要么高度优先，另一个方向就可能冲破约束（竖屏比例下算出的高度
+        // 超过可用空间，把下面的内容全顶出屏幕 —— 这个坑踩过，
+        // 见 PlayerBox 的注释）。BoxWithConstraints 里两边都夹住，
+        // 横屏竖屏都不会溢出。
+        if (result != null) {
+            BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+                val w = maxWidth
+                val h = maxHeight
+                // **宽度永远铺满，高度跟着比例走** —— 短视频平台都是这个样子：
+                // 画面顶着两边，容器紧贴画面，没有多余的黑框。
+                //
+                // 只有一种情况要退让：竖屏成片按宽度算出来的高度会超过可用空间，
+                // 那时改成高度吃满、宽度让步，否则会把下面的片段条顶出屏幕
+                // （这个坑踩过，见 PlayerBox 的注释）。
+                val th = if (aspect > 0f) minOf(w / aspect, h) else h
+                val tw = if (aspect > 0f) minOf(th * aspect, w) else w
+                // 贴顶而不是居中：横屏成片上方会空出一大块，居中会让画面
+                // 悬在中间，短视频平台都是顶着上沿的。
+                PlayerBox(player, Modifier.size(tw, th).align(Alignment.TopCenter))
+            }
+        }
 
         Row(verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -908,6 +995,37 @@ private fun EditStep(
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+
+        // 选中那一段的头尾微调。
+        //
+        // **只对正在播的那一段显示**：十几张卡片每张都挂四个按钮，
+        // 会把片段条挤成一团按钮，而用户一次只调一段。
+        //
+        // 步长 0.1 秒：再小听不出差别，再大就跳过了想要的那一帧。
+        activeOriginal.takeIf { it >= 0 && it in allClips.indices && it !in removed }
+            ?.let { i ->
+                val (h, t) = nudge[i] ?: (0.0 to 0.0)
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("第 ${i + 1} 段", fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.width(4.dp))
+                    Text("开头", fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    NudgeBtn("−0.1", !recutting) { onNudge(i, -0.1, 0.0) }
+                    NudgeBtn("+0.1", !recutting) { onNudge(i, 0.1, 0.0) }
+                    Spacer(Modifier.width(8.dp))
+                    Text("结尾", fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    NudgeBtn("−0.1", !recutting) { onNudge(i, 0.0, -0.1) }
+                    NudgeBtn("+0.1", !recutting) { onNudge(i, 0.0, 0.1) }
+                    if (h != 0.0 || t != 0.0) {
+                        Spacer(Modifier.weight(1f))
+                        Text("%+.1f / %+.1f".format(h, t), fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
 
         if (allClips.isNotEmpty()) {
             // **横排而不是竖排。** 一段常常只有 1-2 秒，十几段竖着列下来
@@ -1068,11 +1186,28 @@ private fun EditStep(
 @Composable
 private fun DoneStep(result: Pipeline.Result?, onAgain: () -> Unit, onHome: () -> Unit) {
     val player = rememberPlayer(result?.file)
+    // 和剪辑页同一套：宽度铺满、高度跟着成片比例。
+    // **这一页之前漏了** —— 还用着 PlayerBox 的默认「固定 300dp 高」，
+    // 竖屏成片塞进去就是中间一小块，四周全是黑。
+    var aspect by remember(result?.file) { mutableStateOf(0f) }
+    LaunchedEffect(result?.file) {
+        val f = result?.file ?: return@LaunchedEffect
+        aspect = withContext(Dispatchers.IO) { Pipeline.aspectOf(f) }
+    }
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("存好了", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
         Text("在相册的 Movies/Pipo 里", fontSize = 13.sp,
             color = MaterialTheme.colorScheme.primary)
-        if (result != null) PlayerBox(player)
+        if (result != null) {
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                val w = maxWidth
+                // 这一页没有 weight，高度不受限，所以只按宽度算，
+                // 但给一个上限免得竖屏成片把按钮顶到屏幕外。
+                val th = if (aspect > 0f) minOf(w / aspect, 520.dp) else 300.dp
+                val tw = if (aspect > 0f) minOf(th * aspect, w) else w
+                PlayerBox(player, Modifier.size(tw, th).align(Alignment.Center))
+            }
+        }
         result?.let {
             Text("%d 段 · %s · %.1f MB".format(
                 it.clips.size, mmss(it.seconds), it.file.length() / 1e6),
@@ -1113,6 +1248,20 @@ private fun rememberPlayer(file: File?): androidx.media3.exoplayer.ExoPlayer {
         player.prepare()
     }
     return player
+}
+
+/** 微调用的小圆钮。做得小而密 —— 它们会被连点，手指移动距离越短越好。 */
+@Composable
+private fun NudgeBtn(label: String, enabled: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick, enabled = enabled,
+        shape = RoundedCornerShape(50),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Text(label, fontSize = 12.sp,
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
 }
 
 @androidx.annotation.OptIn(UnstableApi::class)

@@ -381,6 +381,29 @@ object Pipeline {
         (r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L) / 1000.0
     }
 
+    /**
+     * 成片的宽高比（宽/高）。拿不到就返回 0。
+     *
+     * **界面用它来定播放器的高度，所以必须可靠。** 一开始是轮询
+     * `player.videoSize`，实测拿不到值（界面上画面明明已经在放了，
+     * 比例却一直是 0，于是播放器退回「吃满剩余高度」，上下两条大黑边）。
+     * 成片文件就在手上，直接读元数据一次读准，比盯着播放器状态可靠。
+     */
+    fun aspectOf(f: File): Float = runCatching {
+        MediaMetadataRetriever().use { r ->
+            r.setDataSource(f.absolutePath)
+            val w = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                ?.toFloatOrNull() ?: return 0f
+            val h = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                ?.toFloatOrNull() ?: return 0f
+            // 旋转元数据会让「宽高」和实际显示方向不一致
+            val rot = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+                ?.toIntOrNull() ?: 0
+            if (h <= 0f || w <= 0f) 0f
+            else if (rot == 90 || rot == 270) h / w else w / h
+        }
+    }.getOrDefault(0f)
+
     private fun sizeOf(ctx: Context, uri: Uri): Cutter.Canvas = retriever(ctx, uri).use { r ->
         val w = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 1280
         val h = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 720

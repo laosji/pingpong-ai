@@ -53,6 +53,7 @@ object Cutter {
 
     data class Canvas(val width: Int, val height: Int)
 
+
     sealed interface Outcome {
         data class Ok(val file: File, val durationMs: Long) : Outcome
         /**

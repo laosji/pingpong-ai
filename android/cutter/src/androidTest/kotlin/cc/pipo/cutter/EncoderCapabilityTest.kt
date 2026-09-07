@@ -32,6 +32,8 @@ class EncoderCapabilityTest {
     private data class Enc(
         val name: String, val hw: Boolean,
         val wAlign: Int, val hAlign: Int, val maxW: Int, val maxH: Int,
+        /** 真正该问的对象 —— 见下面 isSizeSupported 那段注释。 */
+        val caps: android.media.MediaCodecInfo.VideoCapabilities,
     )
 
     private fun encoders(): List<Enc> =
@@ -44,7 +46,7 @@ class EncoderCapabilityTest {
                 Enc(c.name,
                     android.os.Build.VERSION.SDK_INT < 29 || c.isHardwareAccelerated,
                     v.widthAlignment, v.heightAlignment,
-                    v.supportedWidths.upper, v.supportedHeights.upper)
+                    v.supportedWidths.upper, v.supportedHeights.upper, v)
             }
 
     @Test
@@ -91,8 +93,17 @@ class EncoderCapabilityTest {
                 val reasons = ArrayList<String>()
                 if (c.width % e.wAlign != 0) reasons.add("宽不是 ${e.wAlign} 的倍数")
                 if (c.height % e.hAlign != 0) reasons.add("高不是 ${e.hAlign} 的倍数")
-                if (c.width > e.maxW || c.height > e.maxH) {
-                    reasons.add("超过上限 ${e.maxW}x${e.maxH}")
+                // **必须用 isSizeSupported，不能分别比 supportedWidths/Heights 的上限。**
+                // 厂商的能力表是按横向报的（常见 1920x1088），于是竖屏 1072x1920
+                // 的「高 1920 > 1088」看起来超限 —— 但同一颗编码器实际是支持
+                // 竖屏的，能力查询自己会处理方向和宽高比。
+                // 按上限硬比的结果：OPPO A79（联发科）和 SHARP AQUOS 两台真机
+                // 都把**最常见的手机竖屏录像**判成不可编码，而同一台机器上
+                // 120 段真转码和全部 CutterTest 都跑通了。
+                // 这是这条断言第三次问错问题，前两次是「所有编码器都要过」
+                // 和「必须和 ffmpeg 绝对对齐」。
+                if (!e.caps.isSizeSupported(c.width, c.height)) {
+                    reasons.add("isSizeSupported 说不行（上限 ${e.maxW}x${e.maxH}）")
                 }
                 if (reasons.isEmpty()) { if (okBy == null) okBy = e.name }
                 else reject.add("${e.name}（${reasons.joinToString("，")}）")
