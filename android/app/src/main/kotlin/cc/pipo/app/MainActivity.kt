@@ -222,9 +222,22 @@ private fun App() {
         ActivityResultContracts.PickVisualMedia()
     ) { picked ->
         if (picked != null) {
+            // **读不出来就当场说，别放进流程。**
+            // 原来是 getOrDefault(0.0)：读不到时长静默当成 0 秒，照样往下走，
+            // 然后在分析阶段炸出一句和「选视频」毫无关系的话。
+            // 相册返回的 uri 不一定能打开 —— 云端占位（还没下载回本机）、
+            // 各家魔改相册返回的 content uri 我们没有权限、文件已被删，
+            // 都会走到这里。这几种情况用户能自己解决，前提是我们说清楚。
+            val d = runCatching { Pipeline.durationOf(ctx, picked) }.getOrDefault(0.0)
+            if (d <= 0.0) {
+                error = "这段视频读不出来。如果它还存在云端（相册里带云朵标记），" +
+                    "先在相册里下载到手机再选；从别的应用分享过来的也可能打不开。"
+                Diagnostics.autoSend(ctx, IllegalStateException("picked uri unreadable"))
+                return@rememberLauncherForActivityResult
+            }
             uri = picked
             error = null
-            durationS = runCatching { Pipeline.durationOf(ctx, picked) }.getOrDefault(0.0)
+            durationS = d
             step = Step.Theme
         }
     }
