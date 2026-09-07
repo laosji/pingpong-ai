@@ -278,7 +278,8 @@ object Pipeline {
             // 指向我们自己代码的栈 —— 真正的死因（Media3 的错误码、muxer 底下
             // 那个异常、实际选中的编码器和分辨率）全在这一行被丢掉了。
             is Cutter.Outcome.Failed -> throw CutFailed(res.message, res.detail, res.cause)
-
+            // 用户自己放弃的，走独立类型，不进错误展示那条路
+            is Cutter.Outcome.Cancelled -> throw Cancelled()
         }
     }
 

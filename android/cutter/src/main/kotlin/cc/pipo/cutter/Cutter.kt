@@ -63,6 +63,18 @@ object Cutter {
         data class Failed(
             val message: String, val cause: Throwable?, val detail: String = "",
         ) : Outcome
+
+        /**
+         * 用户自己放弃的。**不是失败**，别当错误显示。
+         *
+         * 原来这个状态是 `Failed("已取消", null)` —— 用一个魔法字符串表示，
+         * 上层靠 `e.message == "已取消"` 来认。这种写法只要有人动一次文案就会断，
+         * 而这正是后来发生的事：给失败消息包了一层人话之后，
+         * message 变成「没能把片段拼成成片（已取消）。点上面的…」，
+         * 字符串比较失配，**用户点了「放弃」，界面弹出一个红色错误卡片**。
+         * 换成独立类型，文案怎么改都不影响判断。
+         */
+        data object Cancelled : Outcome
     }
 
     /**
@@ -259,7 +271,7 @@ object Cutter {
             last = export(context, composition, out, budget, onProgress, shouldStop)
             // 成功、被用户放弃、或者已经是最后一次 —— 都不再试。
             // **超时不重试**：预算已经烧掉一次了，再来一次是让用户等两倍。
-            if (last is Outcome.Ok || last is Outcome.Failed && last.message == "已取消") break
+            if (last is Outcome.Ok || last is Outcome.Cancelled) break
             if (i == modes.lastIndex) break
             if (last is Outcome.Failed && last.message.startsWith("超时")) break
         }
@@ -339,11 +351,20 @@ object Cutter {
             t.start(composition, out.absolutePath)
         }
 
-        val deadline = System.currentTimeMillis() + budget
+        // **单调时钟，不是墙钟。** currentTimeMillis 会被 NTP 校时前后拨动：
+        // 往前跳一下，这里就直接判超时，把一次正在正常进行的转码当成失败扔掉；
+        // 往后拨则会多等。elapsedRealtime 从开机起单调递增（含深睡），
+        // 正是「已经等了多久」该用的那个。
+        //
+        // 这不是理论担心：一份真机报告（OPPO PLB110，Android 16）里
+        // 「拼接成片 165045」比它前一步「分组完成 166358」还早 1.3 秒 ——
+        // 顺序上不可能，只能是运行途中墙钟被回拨了 1.3 秒。同一台机器上
+        // 换个方向跳，就是一次莫名其妙的超时失败。
+        val deadline = android.os.SystemClock.elapsedRealtime() + budget
         val holder = ProgressHolder()
         var stopped = false
         synchronized(lock) {
-            while (result == null && System.currentTimeMillis() < deadline) {
+            while (result == null && android.os.SystemClock.elapsedRealtime() < deadline) {
                 lock.wait(250)
                 if (shouldStop?.invoke() == true) { stopped = true; break }
                 if (onProgress != null) {
@@ -365,7 +386,7 @@ object Cutter {
             runCatching { if (out.exists()) out.delete() }
         }
         handler.post { worker.quitSafely() }
-        return r ?: if (stopped) Outcome.Failed("已取消", null)
+        return r ?: if (stopped) Outcome.Cancelled
                     else Outcome.Failed("超时：超过 ${budget / 1000} 秒仍未完成", null)
     }
 }

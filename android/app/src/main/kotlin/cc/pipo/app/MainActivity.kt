@@ -269,8 +269,11 @@ private fun App() {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e          // 用户主动放弃，不是错误，别弹出来
             } catch (e: Throwable) {
-                // 「已取消」是放弃之后 Cutter 的返回值，同样不该当错误显示
-                if (e.message == "已取消") throw kotlinx.coroutines.CancellationException()
+                // 放弃不是错误。**按类型判，不按文案判** —— 原来这里比的是
+                // `e.message == "已取消"`，后来给失败消息包了一层人话，
+                // message 变成「没能把片段拼成成片（已取消）。…」，比较失配，
+                // 于是用户点了「放弃」反而弹出一个红色错误卡片。
+                if (e is Pipeline.Cancelled) throw kotlinx.coroutines.CancellationException()
                 error = humanize(e)
                 lastError = e
                 Diagnostics.autoSend(ctx, e)
@@ -312,6 +315,12 @@ private fun App() {
             saved = false        // 存过的是上一版，这版还没存
             // 旧成片可以收了，但要留住正在放的这份
             withContext(Dispatchers.IO) { Pipeline.clearOutputs(ctx, keep = r.file) }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e              // 换素材/回首页会取消这条协程，不是错误
+        } catch (e: Pipeline.Cancelled) {
+            // **这条以前整个漏了。** 主路径有取消判断，重剪路径一条都没有 ——
+            // 在成片页删掉一段、重剪途中放弃，照样会弹红色错误卡片。
+            removed = applied
         } catch (e: Throwable) {
             // **和主路径用同一套人话。** 之前这里是 e.message ?: e.toString()，
             // 同一个 OOM 在首次剪辑时有中文提示，在删掉一段重剪时却甩英文原文。

@@ -23,3 +23,21 @@
 # 代价只有包体大一点点，不影响混淆强度（名字照样是混淆的）。
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile
+
+# **我们自己那几层的类名也要留。**
+# 一份真机报告（OPPO PLB110）传回来的栈是这样的：
+#
+#     at s1.D0.c(Unknown Source:1221)
+#     at s1.X.n(Unknown Source:763)
+#     at I1.a.h(Unknown Source:8)
+#
+# 行号有了（上面那两条规则起了作用），但**没有一帧能看出是哪个函数**——
+# 既不知道是我们的代码还是 Media3 的，也不知道是分析还是切片。
+# 等于只知道「在某处第 1221 行」，定位不了任何东西。
+#
+# 只 keepnames 我们自己这三个包：混淆强度对第三方库和资源不变，
+# 而报告从「一串乱码」变成「一眼看出走到哪」。
+# 用 -keepnames（保留名字、仍然做优化和裁剪），不是 -keep（整个不动）。
+-keepnames class cc.pipo.app.** { *; }
+-keepnames class cc.pipo.core.** { *; }
+-keepnames class cc.pipo.cutter.** { *; }

@@ -85,12 +85,15 @@ object Diagnostics {
         marks.clear()
         bg = 0
         leftDuringWork = false
-        t0 = System.currentTimeMillis()
+        // 单调时钟。用墙钟的话校时一动，各阶段耗时就会前后错乱 ——
+        // 一份真机报告里「拼接成片」比它前一步还早 1.3 秒，就是这么来的，
+        // 而这几行正是出问题时唯一能看出「卡在哪一步」的东西。
+        t0 = android.os.SystemClock.elapsedRealtime()
     }
 
     fun mark(name: String) {
         if (t0 == 0L) reset()
-        marks[name] = System.currentTimeMillis() - t0
+        marks[name] = android.os.SystemClock.elapsedRealtime() - t0
         flush()
     }
 
