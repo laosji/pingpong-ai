@@ -143,6 +143,18 @@ object Rerank {
     fun embed(
         pcm32k: FloatArray, m: Model,
         onProgress: ((Int, Int) -> Unit)? = null,
+        /**
+         * 用户放弃了没有。**每一批查一次。**
+         *
+         * 这里是整条链路最长的一段（一份真机报告里 166 秒），而原来
+         * 分析阶段一个取消检查都没有 —— 点了「放弃」界面退回去了，
+         * 这个循环还在后台跑到底。实测放弃后 40 秒 CPU tick 仍在涨，
+         * 而且比前台还快（不用渲染界面）。
+         *
+         * 查的粒度是「批」而不是「窗」：一批几十毫秒，够及时了，
+         * 而每窗查一次是白白多几万次调用。
+         */
+        shouldStop: (() -> Boolean)? = null,
     ): Pair<DoubleArray, Array<FloatArray>> {
         var x = pcm32k
         if (x.size < WIN) x = x.copyOf(WIN)          // 和 Python 的 np.pad 一致：补零
@@ -152,6 +164,9 @@ object Rerank {
 
         var i = 0
         while (i < n) {
+            if (shouldStop?.invoke() == true) {
+                throw java.util.concurrent.CancellationException("已取消")
+            }
             val b = minOf(BATCH, n - i)
             val buf = FloatBuffer.allocate(b * WIN)
             for (k in 0 until b) buf.put(x, (i + k) * HOP, WIN)

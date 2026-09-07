@@ -269,7 +269,11 @@ private fun App() {
                         ModelStore.download(ctx) { dl = it }
                         dl = null
                     }
-                    val clips = Pipeline.analyze(ctx, u, theme.id, onStage = ::onStage)
+                    // 阻塞代码看不见协程取消，得把状态传进去。
+                    // **分析这一段原来是漏的** —— 只有下面的 cut 有，
+                    // 于是「放弃」之后分析还在后台跑到底。
+                    val clips = Pipeline.analyze(ctx, u, theme.id, onStage = ::onStage,
+                        shouldStop = { !coroutineContext.isActive })
                     allClips = clips
                     // 把协程的取消状态传进去 —— 阻塞等待自己看不到
                     result = Pipeline.cut(ctx, u, clips, ::onStage) { !coroutineContext.isActive }

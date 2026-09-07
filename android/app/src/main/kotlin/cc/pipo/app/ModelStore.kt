@@ -33,9 +33,19 @@ object ModelStore {
 
     fun file(ctx: Context): File = File(File(ctx.filesDir, "models").apply { mkdirs() }, LOCAL)
 
+    /**
+     * 模型就位了没有。
+     *
+     * **比长度必须是相等，不是「差不多」。** 原来是 `>= FINAL_BYTES * 0.99`，
+     * 于是一个 99.5% 的残缺文件能通过这一关，然后在 ONNX 加载时报一句
+     * 「格式错误」—— 那句话既指不到下载，也指不到磁盘。
+     * 正常路径上文件是校验过 sha256 才改名过来的，长度必然精确相等；
+     * 会不相等的只有异常来源（备份恢复、外部工具塞进来、写到一半断电），
+     * 而那几种恰恰就该判成「没就位」，重新下一次。
+     */
     fun ready(ctx: Context): Boolean {
         val f = file(ctx)
-        return f.exists() && f.length() >= FINAL_BYTES * 0.99
+        return f.exists() && f.length() == FINAL_BYTES
     }
 
     /**
@@ -139,7 +149,7 @@ object ModelStore {
             check(part.renameTo(file(ctx))) { "无法写入模型文件" }
         } catch (e: Throwable) {
             part.delete()
-            if (e.message?.contains("ENOSPC") == true) {
+            if (isDiskFull(e)) {
                 val free = File(ctx.filesDir.absolutePath).usableSpace / 1_000_000
                 throw NotEnoughSpace(FINAL_BYTES / 1_000_000, free)
             }
@@ -187,7 +197,19 @@ object ModelStore {
                 if (have > 0) setRequestProperty("Range", "bytes=$have-")
             }.use { conn ->
                 // 206 = 服务端接受了续传；200 = 不支持，从头给
-                val resuming = conn.responseCode == 206
+                val code = conn.responseCode
+                // **416 必须单独处理。** 断点正好等于完整长度时（字节下完了，
+                // 但进程在校验/改名之前就死了），Range 起点落在文件末尾之后，
+                // 服务端回 416。原来没有这个分支：接着去读 inputStream 会抛，
+                // 而下面的 catch 又把 FileNotFoundException 排除在「下载中断」
+                // 之外 —— 用户看到一句裸异常，而且下次还会再来一遍。
+                // 已经下满了就地丢掉重下：只有这一种情况下重下是对的，
+                // 因为文件长度对而内容没验过，续传无从谈起。
+                if (code == 416) {
+                    part.delete()
+                    throw Interrupted(0L)
+                }
+                val resuming = code == 206
                 if (!resuming && have > 0) { part.delete(); done = 0L }
                 conn.inputStream.use { src ->
                     java.io.FileOutputStream(part, resuming).buffered(1 shl 20).use { out ->
@@ -214,16 +236,21 @@ object ModelStore {
                     md.update(buf, 0, n)
                 }
             }
-            check(md.digest().hex() == SHA) {
-                // 校验不过说明拼出来的东西是坏的，留着只会让下次续传继续错
+            // **清理不能写在 check 的消息 lambda 里。** 原来是
+            // `check(...) { part.delete(); "..." }` —— 能工作（lambda 只在
+            // 失败时求值），但把副作用藏在「生成错误消息」的位置上：
+            // 谁把 check 换成 if、或者以后加一个提前返回，清理就静默没了，
+            // 而症状是「下次续传接着错」，极难联想到这里。
+            if (md.digest().hex() != SHA) {
+                // 拼出来的东西是坏的，留着只会让下次续传继续错
                 part.delete()
-                "模型校验不通过 —— 已清掉重下"
+                error("模型校验不通过 —— 已清掉重下")
             }
             check(part.renameTo(file(ctx))) { "无法写入模型文件" }
         } catch (e: Throwable) {
             // **不删半截文件** —— 那正是下次续传的起点。
             // 只有校验失败才删（在上面），因为那时候文件本身是坏的。
-            if (e.message?.contains("ENOSPC") == true) {
+            if (isDiskFull(e)) {
                 part.delete()
                 val free = File(ctx.filesDir.absolutePath).usableSpace / 1_000_000
                 throw NotEnoughSpace(FINAL_BYTES / 1_000_000, free)
@@ -238,6 +265,29 @@ object ModelStore {
     }
 
     private fun ByteArray.hex() = joinToString("") { "%02x".format(it) }
+
+    /**
+     * 这是不是「磁盘满了」。
+     *
+     * **按 errno 判，不按消息里有没有 ENOSPC 这几个字母判。**
+     * 原来是 `e.message?.contains("ENOSPC")`：依赖系统异常文案的具体拼写，
+     * 而且只看最外层 —— ENOSPC 实际包在 ErrnoException 里，
+     * 外层 IOException 的 message 长什么样是各版本自己决定的。
+     * 这个项目刚被同一个反模式坑过一次：用 `e.message == "已取消"` 判断
+     * 用户放弃，后来给消息包了一层人话，判断当场失配，
+     * 结果用户点「放弃」弹出一个红色错误卡片。
+     */
+    private fun isDiskFull(e: Throwable): Boolean {
+        var t: Throwable? = e
+        var hops = 0
+        while (t != null && hops++ < 8) {          // 防自引用的 cause 环
+            if (t is android.system.ErrnoException &&
+                t.errno == android.system.OsConstants.ENOSPC) return true
+            if (t === t.cause) break
+            t = t.cause
+        }
+        return false
+    }
 
     private inline fun <T> HttpsURLConnection.use(block: (HttpsURLConnection) -> T): T =
         try { block(this) } finally { disconnect() }

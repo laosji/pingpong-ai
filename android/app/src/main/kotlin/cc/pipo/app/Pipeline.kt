@@ -137,6 +137,18 @@ object Pipeline {
     fun analyze(
         ctx: Context, uri: Uri, themeId: String, top: Int = Highlight.DEFAULT_TOP_N,
         onStage: (Stage) -> Unit,
+        /**
+         * 用户放弃了没有。
+         *
+         * **原来这个参数根本不存在** —— 只有 cut() 有。于是点「放弃」之后
+         * 界面退回去了，分析还在后台跑到底：实测放弃后 40 秒 CPU tick 仍在涨
+         * （97/秒，比前台的 75/秒还快，因为不用渲染界面了），
+         * 同时占着一百多 MB。而 MainActivity 那边的注释一直写着
+         * 「用户放弃时才能真的取消」—— 注释描述的行为从来没有实现过。
+         *
+         * 阻塞代码看不见协程取消，只能由调用方把状态传进来。
+         */
+        shouldStop: (() -> Boolean)? = null,
     ): List<Clip> {
         val model = ModelStore.file(ctx)
         require(model.exists()) { "声学模型还没下载" }
@@ -162,7 +174,7 @@ object Pipeline {
         // 12 分钟素材就是 46MB + 93MB 同时在堆上，白白多占一份。
         // 用可空变量并显式置空，不要指望局部变量会被及时回收 ——
         // 作用域没结束，引用就还在，GC 一个字节都不会放。
-        var pcm16: FloatArray? = AudioDecode.decode(ctx, uri, 16000)
+        var pcm16: FloatArray? = AudioDecode.decode(ctx, uri, 16000, durationS, shouldStop)
         onStage(Stage.Decoded(durationS))
 
         onStage(Stage.Detecting)
@@ -172,12 +184,12 @@ object Pipeline {
         onStage(Stage.Detected(det.hits.size))
 
         onStage(Stage.Reranking(0))
-        val pcm32 = AudioDecode.decode(ctx, uri, 32000)
+        val pcm32 = AudioDecode.decode(ctx, uri, 32000, durationS, shouldStop)
         val kept: DoubleArray
         Rerank.load(model.absolutePath, weightsPath(ctx)).use { m ->
-            val (times, feats) = Rerank.embed(pcm32, m) { done, total ->
+            val (times, feats) = Rerank.embed(pcm32, m, { done, total ->
                 onStage(Stage.Reranking(if (total > 0) 100 * done / total else 0))
-            }
+            }, shouldStop)
             // 全片平均概率是「这是不是乒乓球录像」的判据：
             // 实测阴性 0.009-0.010、真实素材 0.379-0.672，差 40 倍。
             val mean = Rerank.meanProbability(feats, m)

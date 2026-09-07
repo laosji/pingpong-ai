@@ -43,32 +43,72 @@ object AudioDecode {
 
     class NoAudioTrack : Exception("这段视频没有音轨")
 
+    /**
+     * 解码器卡住了。
+     *
+     * **和「慢」要分开。** 慢只是等，卡住是永远不会结束 —— 而原来的循环
+     * `while (!sawOutputEos)` 没有任何截止时间：厂商解码器如果不吐 EOS，
+     * 它会一直转下去，不抛异常、不动进度、也停不掉。
+     * 那正是最初那台华为「卡在某一步」的形状。
+     */
+    class Stuck(seconds: Long) : Exception(
+        "这段视频的音轨解不开（等了 ${seconds} 秒没有进展）。" +
+            "多半是这台手机的解码器和这个文件的组合有问题 —— " +
+            "用手机自带的相册把它导出/转存一次再试，通常就好了。")
+
+    /**
+     * 一次解码最多允许跑多久。
+     *
+     * 按素材时长给：解码大约是实时的几十倍，这里给 **每秒素材 2 秒预算**，
+     * 下限 60 秒。12 分钟素材 = 24 分钟预算，实测只要 20 秒，余量 70 倍 ——
+     * 宽到不可能误伤慢机器，又不至于真卡住时无限等下去。
+     */
+    private fun budgetMs(durationS: Double): Long =
+        ((durationS * 2000).toLong()).coerceAtLeast(60_000L)
+
     /** 解出整段音频。返回单声道 float，采样率为 [targetRate]。 */
-    fun decode(path: String, targetRate: Int): FloatArray =
-        decode(targetRate) { it.setDataSource(path) }
+    fun decode(
+        path: String, targetRate: Int,
+        durationS: Double = 0.0, shouldStop: (() -> Boolean)? = null,
+    ): FloatArray = decode(targetRate, durationS, shouldStop) { it.setDataSource(path) }
 
     /**
      * 相册选出来的是 content:// URI，不是文件路径 —— 而且大多数情况下
      * **拿不到真实路径**（作用域存储）。MediaExtractor 支持直接吃 URI，
      * 所以不要试图去反解路径，那条路在新系统上会时灵时不灵。
      */
-    fun decode(context: Context, uri: Uri, targetRate: Int): FloatArray =
-        decode(targetRate) { it.setDataSource(context, uri, null) }
+    fun decode(
+        context: Context, uri: Uri, targetRate: Int,
+        durationS: Double = 0.0, shouldStop: (() -> Boolean)? = null,
+    ): FloatArray = decode(targetRate, durationS, shouldStop) {
+        it.setDataSource(context, uri, null)
+    }
 
     /** 解码器报出来的音轨参数。 */
     private class Info(val srcRate: Int, var channels: Int)
 
-    private fun decode(targetRate: Int, open: (MediaExtractor) -> Unit): FloatArray {
+    private fun decode(
+        targetRate: Int, durationS: Double, shouldStop: (() -> Boolean)?,
+        open: (MediaExtractor) -> Unit,
+    ): FloatArray {
+        val budget = budgetMs(durationS)
         // 第一遍：只数单声道采样数。不存任何 PCM。
         var count = 0L
-        val info = pump(open) { _, n -> count += n }
+        val info = pump(open, budget, shouldStop) { _, n -> count += n }
         val srcRate = info.srcRate
 
         if (srcRate == targetRate) {
             // 同采样率：没有重采样，长度就是采样数
             val out = FloatArray(count.toInt())
             var off = 0
-            pump(open) { mono, n -> System.arraycopy(mono, 0, out, off, n); off += n }
+            pump(open, budget, shouldStop) { mono, n ->
+                // **必须夹住。** 两遍解码理论上一样长，但那是假设 ——
+                // 硬件解码器在负载下多吐一个采样，这里原来是裸的 arraycopy，
+                // 直接 ArrayIndexOutOfBoundsException。重采样那条路一直有
+                // `if (w < outLen)` 的保护，这条没有，两条路径处理不一致。
+                val take = minOf(n, out.size - off)
+                if (take > 0) { System.arraycopy(mono, 0, out, off, take); off += take }
+            }
             return out
         }
 
@@ -81,7 +121,7 @@ object AudioDecode {
         val out = FloatArray(outLen)
         var w = 0
         val stream = Resampler.Stream(srcRate, targetRate)
-        pump(open) { mono, n ->
+        pump(open, budget, shouldStop) { mono, n ->
             stream.feed(mono, n) { v -> if (w < outLen) out[w++] = v }
         }
         stream.finish { v -> if (w < outLen) out[w++] = v }
@@ -101,6 +141,8 @@ object AudioDecode {
      */
     private inline fun pump(
         open: (MediaExtractor) -> Unit,
+        budgetMs: Long,
+        noinline shouldStop: (() -> Boolean)?,
         onMono: (FloatArray, Int) -> Unit,
     ): Info {
         val ex = MediaExtractor()
@@ -134,8 +176,24 @@ object AudioDecode {
         var inter = FloatArray(8192)
         var mono = FloatArray(8192)
 
+        // **循环必须有出口。** 两个 dequeue 都是超时返回，所以它们不会挂住，
+        // 但循环本身原来没有任何截止时间：解码器只要不吐 EOS 就永远转下去。
+        // 单调时钟，不用墙钟 —— 校时一动就会误判（这个坑刚在 Cutter 踩过）。
+        val deadline = android.os.SystemClock.elapsedRealtime() + budgetMs
+        var lastProgress = android.os.SystemClock.elapsedRealtime()
         try {
             while (!sawOutputEos) {
+                // 用户放弃。**每一轮都查** —— 分析阶段原来一个取消检查都没有，
+                // 点了「放弃」界面退回去了，这个循环还在后台跑到底
+                // （实测放弃后 40 秒 CPU tick 还在涨，比前台还快）。
+                if (shouldStop?.invoke() == true) {
+                    throw java.util.concurrent.CancellationException("已取消")
+                }
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (now > deadline) throw Stuck(budgetMs / 1000)
+                // 总预算之外再加一条「多久没有任何产出」：总预算按素材时长给，
+                // 长素材那个数很大，真卡住时不该干等十几分钟。
+                if (now - lastProgress > 60_000L) throw Stuck(60)
                 if (!sawInputEos) {
                     val inIdx = codec.dequeueInputBuffer(10_000)
                     if (inIdx >= 0) {
@@ -164,6 +222,7 @@ object AudioDecode {
                             checkedFormat = true
                         }
                         if (bi.size > 0) {
+                            lastProgress = android.os.SystemClock.elapsedRealtime()
                             val buf = codec.getOutputBuffer(outIdx)!!
                             buf.position(bi.offset)
                             buf.limit(bi.offset + bi.size)

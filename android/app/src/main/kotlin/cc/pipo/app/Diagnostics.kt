@@ -30,7 +30,17 @@ import javax.net.ssl.HttpsURLConnection
  */
 object Diagnostics {
 
-    /** 各阶段耗时。出问题时「卡在哪一步、前面几步花了多久」是第一手线索。 */
+    /**
+     * 各阶段耗时。出问题时「卡在哪一步、前面几步花了多久」是第一手线索。
+     *
+     * **必须同步。** 写它的有两条线程：`mark()` 走 onStage，在
+     * Dispatchers.IO 上；`onBackground()` 走生命周期回调，在主线程上。
+     * LinkedHashMap 不是线程安全的，并发 put 在扩容时可能把链表接成环，
+     * 之后任何一次遍历（也就是生成报告本身）都会挂死 —— 一个**只在出问题时
+     * 才会触发的死锁**，恰好是最不能出问题的时候。
+     * 用同一把锁保护 marks / t0 / bg，代价可以忽略：一次处理几十次调用。
+     */
+    private val lock = Any()
     private val marks = LinkedHashMap<String, Long>()
     private var t0 = 0L
     /** 这次处理的素材尺寸。**首要嫌疑就在这**，见 encoders() 的注释。 */
@@ -59,9 +69,9 @@ object Diagnostics {
      */
     fun onBackground() {
         if (!busy) return
-        bg++
+        val n = synchronized(lock) { ++bg }
         leftDuringWork = true
-        mark("退到后台#$bg")
+        mark("退到后台#$n")
     }
 
     /**
@@ -82,18 +92,24 @@ object Diagnostics {
         private set
 
     fun reset() {
-        marks.clear()
-        bg = 0
+        synchronized(lock) {
+            marks.clear()
+            bg = 0
+            // 单调时钟。用墙钟的话校时一动，各阶段耗时就会前后错乱 ——
+            // 一份真机报告里「拼接成片」比它前一步还早 1.3 秒，就是这么来的，
+            // 而这几行正是出问题时唯一能看出「卡在哪一步」的东西。
+            t0 = android.os.SystemClock.elapsedRealtime()
+        }
         leftDuringWork = false
-        // 单调时钟。用墙钟的话校时一动，各阶段耗时就会前后错乱 ——
-        // 一份真机报告里「拼接成片」比它前一步还早 1.3 秒，就是这么来的，
-        // 而这几行正是出问题时唯一能看出「卡在哪一步」的东西。
-        t0 = android.os.SystemClock.elapsedRealtime()
     }
 
     fun mark(name: String) {
-        if (t0 == 0L) reset()
-        marks[name] = android.os.SystemClock.elapsedRealtime() - t0
+        synchronized(lock) {
+            if (t0 == 0L) t0 = android.os.SystemClock.elapsedRealtime()
+            marks[name] = android.os.SystemClock.elapsedRealtime() - t0
+        }
+        // **落盘放在锁外。** 写文件几毫秒，握着锁做会让 IO 线程和主线程
+        // 互相等；而报告本身在 flush 内部再单独取一次快照。
         flush()
     }
 
@@ -202,9 +218,13 @@ object Diagnostics {
                 + "（宽%16=${it.first % 16} 高%16=${it.second % 16}"
                 + (if (it.first % 16 == 0 && it.second % 16 == 0) "，对齐）" else "，**不对齐**）"))
         }
-        if (marks.isNotEmpty()) {
+        // **先取快照再遍历。** 生成报告的这条线程和写打点的那条不是同一条，
+        // 直接遍历会撞 ConcurrentModificationException —— 而这段代码
+        // 恰恰只在出问题时才跑，那时候再炸一次等于把唯一的线索也弄丢。
+        val snapshot = synchronized(lock) { LinkedHashMap(marks) }
+        if (snapshot.isNotEmpty()) {
             appendLine("各阶段（毫秒）")
-            marks.forEach { (k, v) -> appendLine("  $k  $v") }
+            snapshot.forEach { (k, v) -> appendLine("  $k  $v") }
         }
         if (err != null) {
             appendLine("异常 ${err.javaClass.name}")
