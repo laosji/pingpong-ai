@@ -32,6 +32,12 @@ import java.io.File
 @UnstableApi
 class ManySegmentsTest {
 
+    /** **必须走 logcat，不能用 println。**
+     * Test Lab 上 println 不落 logcat —— 而机型矩阵正是这些测试
+     * 唯一有价值的地方（本地只有一台模拟器 + 一台 Sony）。
+     * 结果只剩「过/不过」，各家编码器的实际参数一个都拿不到。 */
+    private val LOG = "PipoManySegments"
+
     private val ctx = InstrumentationRegistry.getInstrumentation().targetContext
 
     private fun asset(name: String): File {
@@ -58,7 +64,7 @@ class ManySegmentsTest {
         val f = asset("land.mp4")
         val src = Uri.fromFile(f)
         val hw = hardwareEncoder()
-        println("  硬件编码器 ${hw ?: "没有（这台只有软编，测不到厂商实现）"}")
+        android.util.Log.i(LOG, "  硬件编码器 ${hw ?: "没有（这台只有软编，测不到厂商实现）"}")
 
         // land.mp4 有十几秒。在里面反复取 0.4 秒的小段，凑到 120 段 ——
         // **每段都不落在关键帧上**，逼 Transformer 走重编码那条路，
@@ -73,13 +79,13 @@ class ManySegmentsTest {
         val t0 = System.currentTimeMillis()
         val res = Cutter.cut(ctx, segs, out, canvas, timeoutMs = 20 * 60 * 1000)
         val took = System.currentTimeMillis() - t0
-        println("  ${segs.size} 段用了 ${took / 1000}s -> $res")
-        println("  输出 ${out.length()} 字节")
+        android.util.Log.i(LOG, "  ${segs.size} 段用了 ${took / 1000}s -> $res")
+        android.util.Log.i(LOG, "  输出 ${out.length()} 字节")
 
         if (res is Cutter.Outcome.Failed) {
             // 现场是这个测试真正的产出：**失败比成功有价值**，
             // 前提是失败时说得清楚。
-            println("  失败现场：\n${res.detail}")
+            android.util.Log.i(LOG, "  失败现场：\n${res.detail}")
         }
         assertTrue("120 段拼片失败" + (if (hw != null) "（硬件编码器 $hw）" else "") +
             "：${(res as? Cutter.Outcome.Failed)?.let { it.message + "\n" + it.detail } ?: res}",

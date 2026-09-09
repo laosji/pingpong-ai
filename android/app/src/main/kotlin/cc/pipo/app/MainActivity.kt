@@ -184,8 +184,8 @@ private fun App() {
     // 结尾（球落地、捡球）本来就没有声音。固定留白（头 0.4 / 尾 0.7 秒）
     // 必然有时不够、有时多余，而每个回合都不一样 —— 这不是调常数能解决的。
     // 与其我去猜一个更好的常数，不如把这 0.1 秒交给看得见画面的人。
-    var nudge by remember { mutableStateOf<Map<Int, Pair<Double, Double>>>(emptyMap()) }
-    var nudgeApplied by remember { mutableStateOf<Map<Int, Pair<Double, Double>>>(emptyMap()) }
+    var nudge by remember { mutableStateOf<Map<Int, Pipeline.Nudge>>(emptyMap()) }
+    var nudgeApplied by remember { mutableStateOf<Map<Int, Pipeline.Nudge>>(emptyMap()) }
     var recutting by remember { mutableStateOf(false) }
     /**
      * 当前成片是不是最新的。
@@ -341,8 +341,8 @@ private fun App() {
             val adj = nudge
             val kept = allClips.mapIndexedNotNull { i, c ->
                 if (i in removed) null else {
-                    val (h, t) = adj[i] ?: (0.0 to 0.0)
-                    Pipeline.Clip(c.start + h, c.end + t)
+                    val n = adj[i] ?: Pipeline.Nudge()
+                    Pipeline.Clip(c.start + n.head, c.end + n.tail)
                 }
             }
             val r = withContext(Dispatchers.IO) {
@@ -554,24 +554,11 @@ private fun App() {
                     },
                     nudge = nudge,
                     onNudge = { i, dh, dt ->
-                        val (h, t) = nudge[i] ?: (0.0 to 0.0)
-                        val c = allClips[i]
-                        // **不能越过邻段，也不能跑出素材。** 越过邻段的话
-                        // 同一段画面会在成片里出现两次，而用户只会觉得「重复了」，
-                        // 完全联想不到是自己多点了两下。
-                        val prevEnd = allClips.getOrNull(i - 1)
-                            ?.let { p -> p.end + (nudge[i - 1]?.second ?: 0.0) } ?: 0.0
-                        val nextStart = allClips.getOrNull(i + 1)
-                            ?.let { n -> n.start + (nudge[i + 1]?.first ?: 0.0) }
-                            ?: Double.MAX_VALUE
-                        val nh = (h + dh).let { v ->
-                            (c.start + v).coerceIn(prevEnd, c.end + t - 0.3) - c.start
-                        }
-                        val nt = (t + dt).let { v ->
-                            (c.end + v).coerceIn(c.start + nh + 0.3, nextStart) - c.end
-                        }
-                        nudge = if (kotlin.math.abs(nh) < 1e-6 && kotlin.math.abs(nt) < 1e-6)
-                            nudge - i else nudge + (i to (nh to nt))
+                        // 夹取逻辑在 Pipeline.clampNudge 里，有 JVM 测试钉着 ——
+                        // 它要同时满足四个约束（不越过前后两段、不跑出素材、
+                        // 每段至少 0.3 秒），写在这里的闭包里没法测。
+                        val n = Pipeline.clampNudge(allClips, nudge, i, dh, dt, durationS)
+                        nudge = if (n.isZero) nudge - i else nudge + (i to n)
                     },
                 )
 
@@ -895,7 +882,7 @@ private fun EditStep(
     allClips: List<Pipeline.Clip>, removed: Set<Int>, recutting: Boolean,
     thumbs: List<android.graphics.Bitmap?>,
     onToggle: (Int) -> Unit,
-    nudge: Map<Int, Pair<Double, Double>>,
+    nudge: Map<Int, Pipeline.Nudge>,
     /** (段下标, 头部增量秒, 尾部增量秒)。负数=往前，正数=往后。 */
     onNudge: (Int, Double, Double) -> Unit,
 ) {
@@ -1004,7 +991,7 @@ private fun EditStep(
         // 步长 0.1 秒：再小听不出差别，再大就跳过了想要的那一帧。
         activeOriginal.takeIf { it >= 0 && it in allClips.indices && it !in removed }
             ?.let { i ->
-                val (h, t) = nudge[i] ?: (0.0 to 0.0)
+                val n = nudge[i] ?: Pipeline.Nudge()
                 Row(verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("第 ${i + 1} 段", fontSize = 12.sp,
@@ -1019,9 +1006,9 @@ private fun EditStep(
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                     NudgeBtn("−0.1", !recutting) { onNudge(i, 0.0, -0.1) }
                     NudgeBtn("+0.1", !recutting) { onNudge(i, 0.0, 0.1) }
-                    if (h != 0.0 || t != 0.0) {
+                    if (!n.isZero) {
                         Spacer(Modifier.weight(1f))
-                        Text("%+.1f / %+.1f".format(h, t), fontSize = 11.sp,
+                        Text("%+.1f / %+.1f".format(n.head, n.tail), fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.primary)
                     }
                 }

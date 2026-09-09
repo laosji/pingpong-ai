@@ -94,6 +94,59 @@ object Pipeline {
      */
     data class Result(val file: File, val seconds: Double, val clips: List<Clip>)
 
+    /** 一段的头尾微调量（秒）。头为负=往前多留，尾为正=往后多留。 */
+    data class Nudge(val head: Double = 0.0, val tail: Double = 0.0) {
+        val isZero: Boolean get() = kotlin.math.abs(head) < 1e-6 && kotlin.math.abs(tail) < 1e-6
+    }
+
+    /** 每段至少留这么长 —— 缩到 0 会让 Cutter 直接抛异常。 */
+    const val MIN_CLIP_S = 0.3
+
+    /**
+     * 算出微调之后的头尾量，并夹在合法范围内。
+     *
+     * **从界面的 lambda 里挪出来的。** 原来这段逻辑写在 onNudge 的闭包里，
+     * 一行测试都没有 —— 而它要同时满足四个约束，是最容易写错的那种代码。
+     * 挪成纯函数之后能用 JVM 测试逐条钉住，不需要设备。
+     *
+     * 四个约束：
+     *  * 不越过前一段的结尾 —— 越过的话同一画面会在成片里出现两次，
+     *    而用户只会觉得「重复了」，完全联想不到是自己多点了两下
+     *  * 不越过后一段的开头 —— 同上
+     *  * **不跑出素材首尾** —— 原来这条只写在注释里，代码里根本没有：
+     *    最后一段的 nextStart 是 Double.MAX_VALUE，尾巴能一直往后拉到
+     *    素材长度之外
+     *  * 每段至少 [MIN_CLIP_S]
+     *
+     * @param durationS 素材总时长；<= 0 表示未知，那就不按它夹
+     */
+    fun clampNudge(
+        clips: List<Clip>, nudges: Map<Int, Nudge>, i: Int,
+        dHead: Double, dTail: Double, durationS: Double,
+    ): Nudge {
+        val c = clips[i]
+        val cur = nudges[i] ?: Nudge()
+        val lo = clips.getOrNull(i - 1)
+            ?.let { p -> p.end + (nudges[i - 1]?.tail ?: 0.0) } ?: 0.0
+        val hi = clips.getOrNull(i + 1)
+            ?.let { n -> n.start + (nudges[i + 1]?.head ?: 0.0) }
+            ?: (if (durationS > 0.0) durationS else Double.MAX_VALUE)
+
+        // **先把范围本身修正到非空。** coerceIn 在 min > max 时抛
+        // 「Cannot coerce value to an empty range」—— 而这里的上下界来自
+        // 相邻段，用户把两段都往中间挤时完全可能交叉。崩在一次微调上，
+        // 比夹不准糟糕得多。
+        val headMin = lo
+        val headMax = maxOf(lo, c.end + cur.tail - MIN_CLIP_S)
+        val newStart = (c.start + cur.head + dHead).coerceIn(headMin, headMax)
+
+        val tailMin = newStart + MIN_CLIP_S
+        val tailMax = maxOf(tailMin, hi)
+        val newEnd = (c.end + cur.tail + dTail).coerceIn(tailMin, tailMax)
+
+        return Nudge(newStart - c.start, newEnd - c.end)
+    }
+
     /**
      * 剪不出东西的三种原因，**必须分开报**。
      *

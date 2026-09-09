@@ -29,6 +29,12 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class EncoderCapabilityTest {
 
+    /** **必须走 logcat，不能用 println。**
+     * Test Lab 上 println 不落 logcat —— 而机型矩阵正是这些测试
+     * 唯一有价值的地方（本地只有一台模拟器 + 一台 Sony）。
+     * 结果只剩「过/不过」，各家编码器的实际参数一个都拿不到。 */
+    private val LOG = "PipoEncoderCapability"
+
     private data class Enc(
         val name: String, val hw: Boolean,
         val wAlign: Int, val hAlign: Int, val maxW: Int, val maxH: Int,
@@ -52,10 +58,10 @@ class EncoderCapabilityTest {
     @Test
     fun 打印这台设备的编码器能力() {
         val list = encoders()
-        println("  设备 ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}"
+        android.util.Log.i(LOG, "  设备 ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}"
             + " / API ${android.os.Build.VERSION.SDK_INT}")
         list.forEach {
-            println("  ${it.name}  ${if (it.hw) "硬件" else "软件"}"
+            android.util.Log.i(LOG, "  ${it.name}  ${if (it.hw) "硬件" else "软件"}"
                 + "  对齐 ${it.wAlign}x${it.hAlign}  上限 ${it.maxW}x${it.maxH}")
         }
         assertTrue("这台设备一个 H.264 编码器都没有", list.isNotEmpty())
@@ -108,11 +114,11 @@ class EncoderCapabilityTest {
                 if (reasons.isEmpty()) { if (okBy == null) okBy = e.name }
                 else reject.add("${e.name}（${reasons.joinToString("，")}）")
             }
-            println("  ${sw}x$sh -> ${c.width}x${c.height}"
+            android.util.Log.i(LOG, "  ${sw}x$sh -> ${c.width}x${c.height}"
                 + if (okBy != null) "  由 $okBy 承接" else "  **没有编码器能接**")
             // 谁接不了仍然打出来 —— 那是真实信息：软编接不了就意味着
             // 硬编一旦被占用或回退，这条路就断了。只是不当失败。
-            if (reject.isNotEmpty()) println("      接不了：${reject.joinToString("；")}")
+            if (reject.isNotEmpty()) android.util.Log.i(LOG, "      接不了：${reject.joinToString("；")}")
             if (okBy == null) bad.add("源 ${sw}x$sh -> 画布 ${c.width}x${c.height}")
         }
         assertTrue("这些尺寸一个编码器都找不到：\n" + bad.joinToString("\n"), bad.isEmpty())
@@ -130,7 +136,7 @@ class EncoderCapabilityTest {
         for (e in encoders()) {
             val w = 1080
             val ok = w % e.wAlign == 0
-            println("  ${e.name}：1080 % ${e.wAlign} = ${w % e.wAlign}"
+            android.util.Log.i(LOG, "  ${e.name}：1080 % ${e.wAlign} = ${w % e.wAlign}"
                 + if (ok) " —— 这台不受影响" else " —— **这台会踩到**")
         }
     }

@@ -30,6 +30,12 @@ import kotlin.math.sqrt
 @RunWith(AndroidJUnit4::class)
 class AudioDecodeParityTest {
 
+    /** **必须走 logcat，不能用 println。**
+     * Test Lab 上 println 不落 logcat —— 而机型矩阵正是这些测试
+     * 唯一有价值的地方（本地只有一台模拟器 + 一台 Sony）。
+     * 结果只剩「过/不过」，各家编码器的实际参数一个都拿不到。 */
+    private val LOG = "PipoAudioDecodeParity"
+
     private val ctx = InstrumentationRegistry.getInstrumentation().targetContext
 
     private fun asset(name: String): File {
@@ -69,7 +75,7 @@ class AudioDecodeParityTest {
         // 响度差 3% 以内 —— 再多就说明重采样的增益或滤波出了问题
         assertTrue("RMS $rms vs Python $wantRms", abs(rms - wantRms) / wantRms < 0.03)
         assertTrue("峰值 $peak vs Python $wantPeak", abs(peak - wantPeak) / wantPeak < 0.05)
-        println("  PCM ${pcm.size} 采样（Python $want），RMS %.6f / %.6f，峰值 %.4f / %.4f"
+        android.util.Log.i(LOG, "  PCM ${pcm.size} 采样（Python $want），RMS %.6f / %.6f，峰值 %.4f / %.4f"
             .format(rms, wantRms, peak, wantPeak))
     }
 
@@ -89,7 +95,7 @@ class AudioDecodeParityTest {
             if (d <= 0.030) { matched++; worst = maxOf(worst, d) }
         }
         val rate = matched.toDouble() / want.size
-        println("  Python ${want.size} 个击球，Kotlin ${got.size} 个，" +
+        android.util.Log.i(LOG, "  Python ${want.size} 个击球，Kotlin ${got.size} 个，" +
                 "对上 $matched（%.1f%%），最大偏差 %.1f 毫秒".format(rate * 100, worst * 1000))
 
         // **对不上的时候，先分清是「整体偏移」还是「乱」。**
@@ -105,7 +111,7 @@ class AudioDecodeParityTest {
             if (m > bestHit) { bestHit = m; bestShift = s }
             s += 0.001
         }
-        println("  最佳整体平移 %+.0f 毫秒时能对上 %d/%d（%.1f%%）".format(
+        android.util.Log.i(LOG, "  最佳整体平移 %+.0f 毫秒时能对上 %d/%d（%.1f%%）".format(
             bestShift * 1000, bestHit, want.size, 100.0 * bestHit / want.size))
         // **断言的是「形状一致 + 偏移有界」，不是「和 ffmpeg 绝对对齐」。**
         //
@@ -146,6 +152,6 @@ class AudioDecodeParityTest {
         val body = y.copyOfRange(200, y.size - 200)
         val rms = sqrt(body.fold(0.0) { a, v -> a + v.toDouble() * v } / body.size)
         assertTrue("重采样后 RMS $rms，正弦应当约 0.707", abs(rms - 0.7071) < 0.02)
-        println("  48k→16k 正弦：长度 ${y.size}，RMS %.4f".format(rms))
+        android.util.Log.i(LOG, "  48k→16k 正弦：长度 ${y.size}，RMS %.4f".format(rms))
     }
 }

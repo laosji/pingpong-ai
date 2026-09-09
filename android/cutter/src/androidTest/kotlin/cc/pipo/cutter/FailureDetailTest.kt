@@ -30,6 +30,12 @@ import java.io.File
 @UnstableApi
 class FailureDetailTest {
 
+    /** **必须走 logcat，不能用 println。**
+     * Test Lab 上 println 不落 logcat —— 而机型矩阵正是这些测试
+     * 唯一有价值的地方（本地只有一台模拟器 + 一台 Sony）。
+     * 结果只剩「过/不过」，各家编码器的实际参数一个都拿不到。 */
+    private val LOG = "PipoFailureDetail"
+
     private val ctx = InstrumentationRegistry.getInstrumentation().targetContext
 
     private fun asset(name: String): File {
@@ -58,7 +64,7 @@ class FailureDetailTest {
         val src = Uri.fromFile(asset("land.mp4"))
         // /system 在任何未 root 的设备上都不可写
         val out = File("/system/pipo_should_not_be_writable.mp4")
-        println("  故意写到不可写路径 ${out.absolutePath}")
+        android.util.Log.i(LOG, "  故意写到不可写路径 ${out.absolutePath}")
 
         val res = Cutter.cut(
             ctx, listOf(Cutter.Segment(src, 1.0, 3.0)), out, Cutter.Canvas(320, 180),
@@ -67,8 +73,8 @@ class FailureDetailTest {
         assertTrue("本该失败却成功了 —— /system 居然可写？换个路径再试",
             res is Cutter.Outcome.Failed)
         val f = res as Cutter.Outcome.Failed
-        println("  message = ${f.message}")
-        println("  detail  = ${f.detail}")
+        android.util.Log.i(LOG, "  message = ${f.message}")
+        android.util.Log.i(LOG, "  detail  = ${f.detail}")
 
         // **cause 必须留着。** 之前整条链都在丢它。
         assertTrue("cause 丢了 —— 真正的死因就在这里面", f.cause != null)

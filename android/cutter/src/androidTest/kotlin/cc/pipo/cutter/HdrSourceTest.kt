@@ -37,6 +37,12 @@ import java.io.File
 @UnstableApi
 class HdrSourceTest {
 
+    /** **必须走 logcat，不能用 println。**
+     * Test Lab 上 println 不落 logcat —— 而机型矩阵正是这些测试
+     * 唯一有价值的地方（本地只有一台模拟器 + 一台 Sony）。
+     * 结果只剩「过/不过」，各家编码器的实际参数一个都拿不到。 */
+    private val LOG = "PipoHdrSource"
+
     private val ctx = InstrumentationRegistry.getInstrumentation().targetContext
 
     private fun asset(name: String): File {
@@ -78,13 +84,13 @@ class HdrSourceTest {
                 codec.configure(fmt, null, null, 0)
                 true
             } catch (e: Exception) {
-                println("  这台设备接不了色调映射请求：$e")
+                android.util.Log.i(LOG, "  这台设备接不了色调映射请求：$e")
                 false
             } finally {
                 runCatching { codec.release() }
             }
         } catch (e: Exception) {
-            println("  探测失败：$e"); false
+            android.util.Log.i(LOG, "  探测失败：$e"); false
         } finally {
             runCatching { ex.release() }
         }
@@ -102,7 +108,7 @@ class HdrSourceTest {
     @Test
     fun 竖屏1080的画布是16的倍数() {
         val c = Cutter.pickCanvas(listOf(Cutter.Canvas(1080, 1920)))
-        println("  1080x1920 -> ${c.width}x${c.height}")
+        android.util.Log.i(LOG, "  1080x1920 -> ${c.width}x${c.height}")
         assertTrue("宽 ${c.width} 不是 16 的倍数", c.width % 16 == 0)
         assertTrue("高 ${c.height} 不是 16 的倍数", c.height % 16 == 0)
     }
@@ -119,7 +125,7 @@ class HdrSourceTest {
             ctx, listOf(Cutter.Segment(Uri.fromFile(f), 0.5, 3.0)), out, canvas,
             timeoutMs = 3 * 60 * 1000)
 
-        println("  结果 $res")
+        android.util.Log.i(LOG, "  结果 $res")
         // 超时和报错要分开看：**超时才是用户看到的「卡住」**，
         // 报错至少还会弹个提示。两种都不接受，但区分开有助于定位。
         val timedOut = res is Cutter.Outcome.Failed && res.message.startsWith("超时")

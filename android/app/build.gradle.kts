@@ -86,6 +86,10 @@ android {
             kotlin.srcDir("src/main/kotlin")
             assets.srcDir("src/main/assets")
         }
+        // app 模块原来没有 JVM 测试。加上是为了能测那些**不需要设备**的
+        // 纯逻辑（第一个是 Pipeline.clampNudge）—— 设备经常不在手边，
+        // 而「等有设备再验」在实践中就等于「不验」。
+        getByName("test") { kotlin.srcDir("src/test/kotlin") }
     }
     // 把声学模型打进安装包。**默认就打包** —— 我们现在只做本地版。
     //
@@ -138,4 +142,5 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.5.1")
     implementation("androidx.media3:media3-ui:1.5.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
+    testImplementation("junit:junit:4.13.2")
 }
