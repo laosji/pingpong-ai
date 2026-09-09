@@ -19,8 +19,8 @@ android {
         // 正式发版不带这个参数，仍然是 26（依据见 cutter/build.gradle.kts）。
         minSdk = (project.findProperty("pipoMinSdk") as String?)?.toInt() ?: 26
         targetSdk = 35
-        versionCode = 13
-        versionName = "0.2.2"
+        versionCode = 14
+        versionName = "0.2.3"
         // ONNX Runtime 每个 ABI 一份原生库。
         // **不要在这里写死 abiFilters** —— 之前只留 arm64-v8a，
         // armeabi-v7a 和 x86_64 的机器直接装不上。正式发版走 AAB，
@@ -87,16 +87,25 @@ android {
             assets.srcDir("src/main/assets")
         }
     }
-    // 把声学模型打进安装包。**只用于直接分发，不能上商店** ——
-    // 模型压完 288 MB，加上本体是 307 MB，而 APK 上限 100 MB、
-    // AAB 基础模块 150 MB，都过不去。商店版仍然走按需下载。
+    // 把声学模型打进安装包。**默认就打包** —— 我们现在只做本地版。
     //
-    //   ./gradlew assembleRelease -PpipoBundleModel
+    // 原来是反过来的：要显式加 -PpipoBundleModel 才打包，忘了加就打出一个
+    // 「必须联网下载」的包，而下载地址至今是 404 —— 也就是一个装上去
+    // 根本用不了的包，而且要到用户点「开始剪辑」才暴露。
+    // **默认值应该是那个「忘了也不会错」的选项。**
+    //
+    // 想做商店版（走按需下载）时显式关掉：
+    //   ./gradlew assembleRelease -PpipoNoBundleModel
+    // 那种包才需要 R2 上有模型；带模型的包 288 MB，超过 APK 100 MB /
+    // AAB 基础模块 150 MB 的上限，上不了商店，只用于直接分发。
     //
     // 生成的 assets 文件不进版本库（见 .gitignore）。
-    if (project.hasProperty("pipoBundleModel")) {
+    if (!project.hasProperty("pipoNoBundleModel")) {
         val src = rootProject.file("../models/cnn14.onnx")
-        require(src.exists()) { "要打包模型得先有 models/cnn14.onnx" }
+        require(src.exists()) {
+            "本地版必须带模型，但找不到 models/cnn14.onnx。\n" +
+                "要打不带模型的商店版，显式加 -PpipoNoBundleModel。"
+        }
         // **放原始文件，不要放 .gz。** 试过放 gz：AGP 会把它解开、
         // 去掉后缀，APK 里的条目变成 assets/cnn14.onnx，
         // 而代码去找 cnn14.onnx.gz 找不到，静默回落到下载 —— 打包等于白做。
